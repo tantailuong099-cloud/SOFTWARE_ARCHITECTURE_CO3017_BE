@@ -1,7 +1,15 @@
-import { DynamicModule, Injectable, Logger, Module, OnModuleInit } from '@nestjs/common';
+import {
+  DynamicModule,
+  Injectable,
+  Logger,
+  Module,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SequelizeModule } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
+import { TokenModel } from '../modules/auth/model/token.model';
+import { UserModel } from '../modules/users/model/user.model';
 
 @Injectable()
 export class DatabaseConnectionChecker implements OnModuleInit {
@@ -12,7 +20,9 @@ export class DatabaseConnectionChecker implements OnModuleInit {
   async onModuleInit() {
     try {
       await this.sequelize.authenticate();
-      this.logger.log('>> Connection to Neon PostgreSQL established successfully!');
+      this.logger.log(
+        '>> Connection to Neon PostgreSQL established successfully!',
+      );
     } catch (error) {
       this.logger.error('>> Unable to connect to Neon PostgreSQL:', error);
     }
@@ -55,11 +65,21 @@ export class DatabaseModule {
                 : {
                     host: configService.get<string>('DB_HOST', 'localhost'),
                     port: Number(configService.get<string>('DB_PORT', '5432')),
-                    username: configService.get<string>('DB_USERNAME', 'postgres'),
-                    password: configService.get<string>('DB_PASSWORD', 'postgres'),
-                    database: configService.get<string>('DB_DATABASE', 'tmc_attendance'),
+                    username: configService.get<string>(
+                      'DB_USERNAME',
+                      'postgres',
+                    ),
+                    password: configService.get<string>(
+                      'DB_PASSWORD',
+                      'postgres',
+                    ),
+                    database: configService.get<string>(
+                      'DB_DATABASE',
+                      'tmc_attendance',
+                    ),
                   }),
               autoLoadModels: true,
+              models: [UserModel, TokenModel],
               synchronize: false,
               logging: false,
               ...(sslRequired

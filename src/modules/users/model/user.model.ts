@@ -32,6 +32,7 @@ export interface UserAttributes {
 @Table({
   tableName: 'users',
   timestamps: true,
+  underscored: true,
 })
 export class UserModel extends Model<UserAttributes> implements UserAttributes {
   @PrimaryKey
