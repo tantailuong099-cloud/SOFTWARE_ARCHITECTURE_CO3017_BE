@@ -1,64 +1,64 @@
-import { Table, Column, Model, DataType, PrimaryKey, ForeignKey, BelongsTo } from 'sequelize-typescript';
-import { EmployeeModel } from './employee.model';
+import {
+  Table,
+  Column,
+  Model,
+  DataType,
+  PrimaryKey,
+  ForeignKey,
+  BelongsTo,
+  Unique,
+} from 'sequelize-typescript';
+import { UserModel } from '../../users/model/user.model';
 
 export enum CredentialStatus {
   ACTIVE = 'ACTIVE',
-  SUSPENDED = 'SUSPENDED',
   REVOKED = 'REVOKED',
+  EXPIRED = 'EXPIRED',
 }
 
 @Table({
   tableName: 'qr_credentials',
   timestamps: true,
+  underscored: true,
 })
 export class QRCredentialModel extends Model {
   @PrimaryKey
-  @Column({
-    type: DataType.STRING,
-    allowNull: false,
-  })
-  declare credentialId: string;
+  @Column({ type: DataType.BIGINT, autoIncrement: true })
+  declare id: string;
 
-  @ForeignKey(() => EmployeeModel)
-  @Column({
-    type: DataType.STRING,
-    allowNull: false,
-  })
-  declare employeeId: string;
+  @Unique
+  @Column({ type: DataType.UUID, field: 'credential_uuid' })
+  declare credentialUuid: string;
 
-  @BelongsTo(() => EmployeeModel)
-  declare employee: EmployeeModel;
+  @ForeignKey(() => UserModel)
+  @Column({ type: DataType.BIGINT, field: 'user_id' })
+  declare userId: string;
+
+  @BelongsTo(() => UserModel)
+  declare user: UserModel;
 
   @Column({
-    type: DataType.STRING,
-    allowNull: false,
-    unique: true,
-  })
-  declare qrPayload: string;
-
-  @Column({
-    type: DataType.ENUM(...Object.values(CredentialStatus)),
+    type: DataType.STRING(20),
     allowNull: false,
     defaultValue: CredentialStatus.ACTIVE,
+    validate: {
+      isIn: [Object.values(CredentialStatus)],
+    },
   })
   declare status: CredentialStatus;
 
-  @Column({
-    type: DataType.INTEGER,
-    allowNull: false,
-    defaultValue: 1,
-  })
-  declare version: number;
-
-  @Column({
-    type: DataType.DATE,
-    allowNull: false,
-  })
+  @Column({ type: DataType.DATE, field: 'issued_at' })
   declare issuedAt: Date;
 
-  @Column({
-    type: DataType.DATE,
-    allowNull: false,
-  })
-  declare expiresAt: Date;
+  @Column({ type: DataType.DATE, allowNull: true, field: 'expires_at' })
+  declare expiresAt: Date | null;
+
+  @Column({ type: DataType.DATE, allowNull: true, field: 'revoked_at' })
+  declare revokedAt: Date | null;
+
+  @Column({ type: DataType.DATE, field: 'created_at' })
+  declare createdAt: Date;
+
+  @Column({ type: DataType.DATE, field: 'updated_at' })
+  declare updatedAt: Date;
 }

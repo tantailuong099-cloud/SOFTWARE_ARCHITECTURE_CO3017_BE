@@ -1,471 +1,500 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
-import { EmployeeModel, EmployeeRole, EmployeeStatus, FactoryId } from './model/employee.model';
-import { CredentialStatus, QRCredentialModel } from './model/qr-credential.model';
 import {
-  CredentialValidationResult,
-  IssueQRCredentialDto,
-  SyncEmployeeDto,
-  UpdateCredentialStatusDto,
-} from './dto/user-qr.dto';
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import * as crypto from 'crypto';
+import * as jwt from 'jsonwebtoken';
+import { FactoryId, UserModel, UserStatus } from '../users/model/user.model';
+import {
+  CredentialStatus,
+  QRCredentialModel,
+} from './model/qr-credential.model';
+import { QRPresentationModel } from './model/qr-presentation.model';
+import { CredentialValidationResult } from './dto/user-qr.dto';
+
+type LegacyCredentialStatus = CredentialStatus | 'SUSPENDED';
+
+export interface LegacyUser {
+  employeeId: string;
+  fullName: string;
+  factoryId: FactoryId;
+  status: UserStatus;
+}
+
+export interface LegacyCredential {
+  qrPayload: string;
+  employeeId: string;
+  status: LegacyCredentialStatus;
+  credentialId: string;
+  expiresAt: Date;
+}
 
 @Injectable()
 export class UserQRService {
-  private readonly logger = new Logger(UserQRService.name);
+  private readonly legacyDynamicNonces = new Set<string>();
+  private readonly legacyUsers = new Map<string, LegacyUser>();
+  private readonly legacyCredentials = new Map<string, LegacyCredential>();
+  private readonly legacySecret = 'TMC_DYNAMIC_QR_SECRET_KEY_2026';
 
-  // In-memory fallback stores for immediate standalone operation / resilience
-  private readonly employeesStore = new Map<string, any>();
-  private readonly credentialsStore = new Map<string, any>();
-  private readonly HMAC_SECRET = 'TMC_DYNAMIC_QR_SECRET_KEY_2026';
-  private readonly usedDynamicNonces = new Set<string>(); // M2 Anti-replay protection (ADR-007)
+  private readonly userModel?: typeof UserModel;
+  private readonly credentialModel?: typeof QRCredentialModel;
+  private readonly presentationModel?: typeof QRPresentationModel;
 
   constructor() {
-    this.seedInitialData();
+    this.userModel = process.env.ENABLE_DB === 'true' ? UserModel : undefined;
+    this.credentialModel =
+      process.env.ENABLE_DB === 'true' ? QRCredentialModel : undefined;
+    this.presentationModel =
+      process.env.ENABLE_DB === 'true' ? QRPresentationModel : undefined;
+    this.seedLegacyCompatibility();
   }
 
-  private seedInitialData() {
-    const initialEmployees = [
-      {
-        id: 'EMP-BD-001',
-        fullName: 'Nguyen Van An',
-        factoryId: FactoryId.BINH_DUONG,
-        status: EmployeeStatus.ACTIVE,
-        department: 'Assembly Line 1',
-        role: EmployeeRole.EMPLOYEE,
-      },
-      {
-        id: 'EMP-BD-002',
-        fullName: 'Tran Thi Bich',
-        factoryId: FactoryId.BINH_DUONG,
-        status: EmployeeStatus.ACTIVE,
-        department: 'Quality Assurance',
-        role: EmployeeRole.SUPERVISOR,
-      },
-      {
-        id: 'EMP-BD-003',
-        fullName: 'Le Hoang Nam',
-        factoryId: FactoryId.BINH_DUONG,
-        status: EmployeeStatus.INACTIVE, // Inactive employee test case
-        department: 'Packaging',
-        role: EmployeeRole.EMPLOYEE,
-      },
-      {
-        id: 'EMP-LA-001',
-        fullName: 'Pham Minh Duc',
-        factoryId: FactoryId.LONG_AN,
-        status: EmployeeStatus.ACTIVE,
-        department: 'Machining',
-        role: EmployeeRole.EMPLOYEE,
-      },
-      {
-        id: 'EMP-LA-002',
-        fullName: 'Vo Thi Mai',
-        factoryId: FactoryId.LONG_AN,
-        status: EmployeeStatus.ACTIVE,
-        department: 'Human Resources',
-        role: EmployeeRole.HR_STAFF,
-      },
+  private seedLegacyCompatibility() {
+    const users: Array<[string, string, FactoryId]> = [
+      ['EMP-BD-001', 'Nguyen Van An', FactoryId.BINH_DUONG],
+      ['EMP-BD-002', 'Tran Thi Bich', FactoryId.BINH_DUONG],
+      ['EMP-BD-003', 'Le Hoang Nam', FactoryId.BINH_DUONG],
+      ['EMP-LA-001', 'Pham Minh Duc', FactoryId.LONG_AN],
+      ['EMP-LA-001', 'Pham Minh Duc', FactoryId.LONG_AN],
     ];
-
-    for (const emp of initialEmployees) {
-      this.employeesStore.set(emp.id, emp);
-    }
-
+    users.forEach(([employeeId, fullName, factoryId]) =>
+      this.legacyUsers.set(employeeId, {
+        employeeId,
+        fullName,
+        factoryId,
+        status:
+          employeeId === 'EMP-BD-003' ? UserStatus.INACTIVE : UserStatus.ACTIVE,
+      }),
+    );
     const now = new Date();
-    const oneDayLater = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
-    const initialCredentials = [
-      // 1. Valid Active QR for Nguyen Van An (Binh Duong)
-      {
-        credentialId: 'CRED-BD-001',
-        employeeId: 'EMP-BD-001',
-        qrPayload: 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
-        status: CredentialStatus.ACTIVE,
-        version: 1,
-        issuedAt: now,
-        expiresAt: oneDayLater,
-      },
-      // 2. Suspended QR for Tran Thi Bich
-      {
-        credentialId: 'CRED-BD-002',
-        employeeId: 'EMP-BD-002',
-        qrPayload: 'TMC:QR:EMP-BD-002:V1:SEC_SUSPENDED_KEY_002',
-        status: CredentialStatus.SUSPENDED,
-        version: 1,
-        issuedAt: now,
-        expiresAt: oneDayLater,
-      },
-      // 3. Expired QR for Le Hoang Nam
-      {
-        credentialId: 'CRED-BD-003',
-        employeeId: 'EMP-BD-003',
-        qrPayload: 'TMC:QR:EMP-BD-003:V1:SEC_EXPIRED_KEY_003',
-        status: CredentialStatus.ACTIVE,
-        version: 1,
-        issuedAt: new Date(now.getTime() - 48 * 60 * 60 * 1000),
-        expiresAt: yesterday,
-      },
-      // 4. Valid Active QR for Pham Minh Duc (Long An)
-      {
-        credentialId: 'CRED-LA-001',
-        employeeId: 'EMP-LA-001',
-        qrPayload: 'TMC:QR:EMP-LA-001:V1:SEC_VALID_KEY_LA01',
-        status: CredentialStatus.ACTIVE,
-        version: 1,
-        issuedAt: now,
-        expiresAt: oneDayLater,
-      },
-    ];
-
-    for (const cred of initialCredentials) {
-      this.credentialsStore.set(cred.credentialId, cred);
-    }
+    const credentials: Array<[string, string, LegacyCredentialStatus, string]> =
+      [
+        [
+          'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+          'EMP-BD-001',
+          CredentialStatus.ACTIVE,
+          'CRED-BD-001',
+        ],
+        [
+          'TMC:QR:EMP-BD-002:V1:SEC_SUSPENDED_KEY_002',
+          'EMP-BD-002',
+          'SUSPENDED',
+          'CRED-BD-002',
+        ],
+        [
+          'TMC:QR:EMP-BD-003:V1:SEC_EXPIRED_KEY_003',
+          'EMP-BD-003',
+          CredentialStatus.EXPIRED,
+          'CRED-BD-003',
+        ],
+        [
+          'TMC:QR:EMP-LA-001:V1:SEC_VALID_KEY_LA01',
+          'EMP-LA-001',
+          CredentialStatus.ACTIVE,
+          'CRED-LA-001',
+        ],
+      ];
+    credentials.forEach(([qrPayload, employeeId, status, credentialId]) => {
+      this.legacyCredentials.set(qrPayload, {
+        qrPayload,
+        employeeId,
+        status,
+        credentialId,
+        expiresAt:
+          credentialId === 'CRED-BD-003'
+            ? new Date(now.getTime() - 60_000)
+            : new Date(now.getTime() + 86_400_000),
+      });
+    });
   }
 
-  // --- Contract: ValidateCredential (Table 32, ADR-002 & M2 Dynamic QR ADR-007) ---
-  async validateCredential(qrPayload: string): Promise<CredentialValidationResult> {
-    if (!qrPayload) {
-      return {
-        isRecognized: false,
-        isValid: false,
-        denialReason: 'EMPTY_QR_PAYLOAD',
-      };
+  async getMyCredential(userId: string) {
+    if (!this.credentialModel) {
+      const credential = [...this.legacyCredentials.values()].find(
+        (item) =>
+          item.employeeId === userId && item.status === CredentialStatus.ACTIVE,
+      );
+      return credential ?? null;
+    }
+    const credential = await this.credentialModel.findOne({
+      where: { userId, status: CredentialStatus.ACTIVE },
+      include: [UserModel],
+    });
+    return credential ? this.publicCredential(credential) : null;
+  }
+
+  async generatePresentation(userId: string) {
+    if (!this.userModel || !this.credentialModel || !this.presentationModel) {
+      return this.generateLegacyPresentation(userId);
+    }
+    const user = await this.userModel.findByPk(userId);
+    if (!user) throw new NotFoundException(`User ${userId} not found`);
+    if (user.status !== UserStatus.ACTIVE) {
+      throw new BadRequestException(
+        'Inactive users cannot generate a QR presentation',
+      );
+    }
+    const credential = await this.credentialModel.findOne({
+      where: { userId, status: CredentialStatus.ACTIVE },
+    });
+    if (!credential)
+      throw new BadRequestException('User has no active QR credential');
+    if (credential.expiresAt && credential.expiresAt.getTime() <= Date.now()) {
+      throw new BadRequestException('QR credential has expired');
     }
 
-    // --- M2 Enhancement: Dynamic Time-based Rotating QR (ADR-007) ---
-    if (qrPayload.startsWith('TMC:DYN:')) {
-      const parts = qrPayload.split(':');
-      if (parts.length < 6) {
+    const ttl = Number(process.env.QR_PRESENTATION_TTL_SECONDS || 30);
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + ttl * 1000);
+    const jti = crypto.randomUUID();
+    await this.presentationModel.create({
+      jti,
+      credentialId: String(credential.id),
+      expiresAt,
+      consumedAt: null,
+      createdAt: now,
+    });
+    const qrToken = jwt.sign(
+      {
+        sub: String(user.id),
+        credentialId: String(credential.id),
+        credentialUuid: credential.credentialUuid,
+        jti,
+        type: 'QR_PRESENTATION',
+      },
+      process.env.QR_JWT_SECRET || 'tmc_dynamic_qr_secret_2026',
+      { expiresIn: ttl },
+    );
+    return {
+      qrToken,
+      jti,
+      generatedAt: now.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+      validForSeconds: ttl,
+    };
+  }
+
+  async listCredentials() {
+    if (!this.credentialModel) {
+      return [...this.legacyCredentials.values()];
+    }
+    const credentials = await this.credentialModel.findAll({
+      include: [UserModel],
+      order: [['id', 'ASC']],
+    });
+    return credentials.map((credential) => this.publicCredential(credential));
+  }
+
+  async issueCredential(userId: string) {
+    if (!this.userModel || !this.credentialModel) {
+      throw new BadRequestException(
+        'Database QR credentials require ENABLE_DB=true',
+      );
+    }
+    const user = await this.userModel.findByPk(userId);
+    if (!user) throw new NotFoundException(`User ${userId} not found`);
+    return UserModel.sequelize!.transaction(async (transaction) => {
+      await this.credentialModel!.update(
+        { status: CredentialStatus.REVOKED, revokedAt: new Date() },
+        {
+          where: { userId: String(userId), status: CredentialStatus.ACTIVE },
+          transaction,
+        },
+      );
+      const credential = await this.credentialModel!.create(
+        {
+          credentialUuid: crypto.randomUUID(),
+          userId,
+          status: CredentialStatus.ACTIVE,
+          issuedAt: new Date(),
+          expiresAt: null,
+          revokedAt: null,
+        },
+        { transaction },
+      );
+      return this.publicCredential(credential);
+    });
+  }
+
+  async revokeCredential(id: string) {
+    if (!this.credentialModel)
+      throw new BadRequestException(
+        'Database QR credentials require ENABLE_DB=true',
+      );
+    const credential = await this.credentialModel.findByPk(id);
+    if (!credential)
+      throw new NotFoundException(`QR credential ${id} not found`);
+    credential.status = CredentialStatus.REVOKED;
+    credential.revokedAt = new Date();
+    await credential.save();
+    return this.publicCredential(credential);
+  }
+
+  async validateAndConsume(
+    qrToken: string,
+  ): Promise<CredentialValidationResult> {
+    try {
+      const payload = jwt.verify(
+        qrToken,
+        process.env.QR_JWT_SECRET || 'tmc_dynamic_qr_secret_2026',
+      ) as jwt.JwtPayload;
+      if (
+        payload.type !== 'QR_PRESENTATION' ||
+        !payload.jti ||
+        !payload.sub ||
+        !payload.credentialId
+      ) {
         return {
           isRecognized: false,
           isValid: false,
-          denialReason: 'MALFORMED_DYNAMIC_QR',
+          denialReason: 'INVALID_QR_TOKEN',
         };
       }
-      const [, , employeeId, timestampStr, nonce, signature] = parts;
-      const timestamp = parseInt(timestampStr, 10);
-      const now = Date.now();
-
-      const employee = this.employeesStore.get(employeeId);
-      if (!employee) {
-        return {
-          isRecognized: true,
-          isValid: false,
-          denialReason: 'EMPLOYEE_RECORD_MISSING',
-        };
+      if (!this.presentationModel || !this.credentialModel || !this.userModel) {
+        return this.validateLegacyCredential(qrToken);
       }
-
-      // 1. Expiration check: strictly valid for 60 seconds (prevents screenshot/photo sharing)
-      const ageMs = Math.abs(now - timestamp);
-      if (ageMs > 60 * 1000) {
+      const credentialId = String(payload.credentialId);
+      const presentationUserId = String(payload.sub);
+      return UserModel.sequelize!.transaction(async (transaction) => {
+        const presentation = await this.presentationModel!.findOne({
+          where: { jti: String(payload.jti), credentialId },
+          transaction,
+          lock: transaction.LOCK.UPDATE,
+        });
+        if (
+          !presentation ||
+          presentation.consumedAt ||
+          presentation.expiresAt.getTime() <= Date.now()
+        ) {
+          return {
+            isRecognized: true,
+            isValid: false,
+            denialReason: 'QR_PRESENTATION_EXPIRED_OR_CONSUMED',
+          };
+        }
+        const credential = await this.credentialModel!.findByPk(credentialId, {
+          transaction,
+        });
+        const user = await this.userModel!.findByPk(presentationUserId, {
+          transaction,
+        });
+        if (
+          !credential ||
+          String(credential.id) !== String(payload.credentialId) ||
+          credential.status !== CredentialStatus.ACTIVE ||
+          credential.userId !== String(payload.sub)
+        ) {
+          return {
+            isRecognized: true,
+            isValid: false,
+            denialReason: 'QR_CREDENTIAL_REVOKED',
+          };
+        }
+        if (!user || user.status !== UserStatus.ACTIVE) {
+          return {
+            isRecognized: true,
+            isValid: false,
+            denialReason: 'INACTIVE_EMPLOYEE',
+          };
+        }
+        presentation.consumedAt = new Date();
+        await presentation.save({ transaction });
         return {
           isRecognized: true,
-          isValid: false,
-          denialReason: 'DYNAMIC_QR_EXPIRED',
-          employeeId: employee.id,
-          employeeName: employee.fullName,
-          factoryId: employee.factoryId,
-          employeeStatus: employee.status,
-          credentialId: `DYN-${employee.id}`,
-          credentialStatus: CredentialStatus.ACTIVE,
-          version: 2,
+          isValid: true,
+          employeeId: String(user.id),
+          employeeName: user.fullName,
+          factoryId: user.factoryId ?? undefined,
+          employeeStatus: user.status,
+          credentialId: String(credential.id),
+          credentialStatus:
+            credential.status === CredentialStatus.ACTIVE
+              ? CredentialStatus.ACTIVE
+              : credential.status === CredentialStatus.REVOKED
+                ? CredentialStatus.REVOKED
+                : undefined,
           isDynamic: true,
         };
-      }
-
-      // 2. Replay attack check: nonce cannot be reused within the validity window
-      if (this.usedDynamicNonces.has(nonce)) {
-        return {
-          isRecognized: true,
-          isValid: false,
-          denialReason: 'DYNAMIC_QR_REPLAY_ATTACK',
-          employeeId: employee.id,
-          employeeName: employee.fullName,
-          factoryId: employee.factoryId,
-          employeeStatus: employee.status,
-          credentialId: `DYN-${employee.id}`,
-          credentialStatus: CredentialStatus.ACTIVE,
-          version: 2,
-          isDynamic: true,
-        };
-      }
-
-      // 3. HMAC signature verification
-      const expectedSig = crypto
-        .createHmac('sha256', this.HMAC_SECRET)
-        .update(`${employeeId}:${timestampStr}:${nonce}`)
-        .digest('hex')
-        .substring(0, 16);
-
-      if (signature !== expectedSig) {
-        return {
-          isRecognized: true,
-          isValid: false,
-          denialReason: 'DYNAMIC_QR_SIGNATURE_INVALID',
-          employeeId: employee.id,
-          employeeName: employee.fullName,
-          factoryId: employee.factoryId,
-          employeeStatus: employee.status,
-          credentialId: `DYN-${employee.id}`,
-          version: 2,
-          isDynamic: true,
-        };
-      }
-
-      // Mark nonce as used
-      this.usedDynamicNonces.add(nonce);
-
+      });
+    } catch {
       return {
-        isRecognized: true,
-        isValid: true,
-        employeeId: employee.id,
-        employeeName: employee.fullName,
-        factoryId: employee.factoryId,
-        employeeStatus: employee.status,
-        credentialId: `DYN-${employee.id}`,
-        credentialStatus: CredentialStatus.ACTIVE,
-        version: 2,
-        isDynamic: true,
+        isRecognized: false,
+        isValid: false,
+        denialReason: 'INVALID_OR_EXPIRED_QR_TOKEN',
       };
     }
+  }
 
-    // --- Standard Static QR Credential (M1 Baseline) ---
-    if (!qrPayload.startsWith('TMC:QR:')) {
+  async validateCredential(
+    qrPayload: string,
+  ): Promise<CredentialValidationResult> {
+    if (qrPayload.startsWith('TMC:QR:') || qrPayload.startsWith('TMC:DYN:')) {
+      return await Promise.resolve(this.validateLegacyCredential(qrPayload));
+    }
+    if (!qrPayload.startsWith('TMC:') && !qrPayload.includes('.')) {
       return {
         isRecognized: false,
         isValid: false,
         denialReason: 'UNRECOGNIZED_CREDENTIAL',
       };
     }
+    return this.validateAndConsume(qrPayload);
+  }
 
-    // Find credential by payload
-    let matchedCred: any = null;
-    for (const cred of this.credentialsStore.values()) {
-      if (cred.qrPayload === qrPayload) {
-        matchedCred = cred;
-        break;
-      }
-    }
-
-    if (!matchedCred) {
+  private validateLegacyCredential(
+    payload: string,
+  ): CredentialValidationResult {
+    if (!payload.startsWith('TMC:DYN:')) {
+      const credential = this.legacyCredentials.get(payload);
+      if (!credential)
+        return {
+          isRecognized: false,
+          isValid: false,
+          denialReason: 'UNRECOGNIZED_CREDENTIAL',
+        };
+      const employee = this.legacyUsers.get(credential.employeeId);
+      if (!employee)
+        return {
+          isRecognized: false,
+          isValid: false,
+          denialReason: 'EMPLOYEE_RECORD_MISSING',
+        };
+      let denialReason: string | undefined;
+      if (credential.expiresAt.getTime() <= Date.now())
+        denialReason = 'CREDENTIAL_EXPIRED';
+      else if (credential.status === 'SUSPENDED')
+        denialReason = 'CREDENTIAL_SUSPENDED';
+      else if (credential.status === CredentialStatus.REVOKED)
+        denialReason = 'CREDENTIAL_REVOKED';
+      else if (credential.status !== CredentialStatus.ACTIVE)
+        denialReason = 'INVALID_CREDENTIAL';
       return {
-        isRecognized: false,
-        isValid: false,
-        denialReason: 'CREDENTIAL_NOT_FOUND',
+        isRecognized: true,
+        isValid: !denialReason && employee.status === UserStatus.ACTIVE,
+        denialReason,
+        employeeId: employee.employeeId,
+        employeeName: employee.fullName,
+        factoryId: employee.factoryId,
+        employeeStatus: employee.status,
+        credentialId: credential.credentialId,
+        credentialStatus:
+          credential.status === CredentialStatus.ACTIVE ||
+          credential.status === CredentialStatus.REVOKED ||
+          credential.status === CredentialStatus.EXPIRED
+            ? credential.status
+            : undefined,
       };
     }
-
-    const employee = this.employeesStore.get(matchedCred.employeeId);
-    if (!employee) {
+    const [, , employeeId, timestamp, nonce, signature] = payload.split(':');
+    const employee = this.legacyUsers.get(employeeId);
+    if (!employee)
       return {
         isRecognized: true,
         isValid: false,
         denialReason: 'EMPLOYEE_RECORD_MISSING',
       };
-    }
-
-    const now = new Date();
-    // Check expiry
-    if (new Date(matchedCred.expiresAt) < now) {
+    const expected = crypto
+      .createHmac('sha256', this.legacySecret)
+      .update(`${employeeId}:${timestamp}:${nonce}`)
+      .digest('hex')
+      .slice(0, 16);
+    if (signature !== expected)
       return {
         isRecognized: true,
         isValid: false,
-        denialReason: 'CREDENTIAL_EXPIRED',
-        employeeId: employee.id,
-        employeeName: employee.fullName,
-        factoryId: employee.factoryId,
-        employeeStatus: employee.status,
-        credentialId: matchedCred.credentialId,
-        credentialStatus: matchedCred.status,
-        version: matchedCred.version,
+        denialReason: 'DYNAMIC_QR_SIGNATURE_INVALID',
       };
-    }
-
-    // Check credential status (ACTIVE, SUSPENDED, REVOKED)
-    if (matchedCred.status === CredentialStatus.SUSPENDED) {
+    if (Math.abs(Date.now() - Number(timestamp)) > 60_000)
       return {
         isRecognized: true,
         isValid: false,
-        denialReason: 'CREDENTIAL_SUSPENDED',
-        employeeId: employee.id,
-        employeeName: employee.fullName,
-        factoryId: employee.factoryId,
-        employeeStatus: employee.status,
-        credentialId: matchedCred.credentialId,
-        credentialStatus: matchedCred.status,
-        version: matchedCred.version,
+        denialReason: 'DYNAMIC_QR_EXPIRED',
       };
-    }
-
-    if (matchedCred.status === CredentialStatus.REVOKED) {
+    if (this.legacyDynamicNonces.has(nonce))
       return {
         isRecognized: true,
         isValid: false,
-        denialReason: 'CREDENTIAL_REVOKED',
-        employeeId: employee.id,
-        employeeName: employee.fullName,
-        factoryId: employee.factoryId,
-        employeeStatus: employee.status,
-        credentialId: matchedCred.credentialId,
-        credentialStatus: matchedCred.status,
-        version: matchedCred.version,
+        denialReason: 'DYNAMIC_QR_REPLAY_ATTACK',
       };
-    }
-
+    this.legacyDynamicNonces.add(nonce);
     return {
       isRecognized: true,
       isValid: true,
-      employeeId: employee.id,
+      employeeId,
       employeeName: employee.fullName,
       factoryId: employee.factoryId,
       employeeStatus: employee.status,
-      credentialId: matchedCred.credentialId,
-      credentialStatus: matchedCred.status,
-      version: matchedCred.version,
+      credentialId: `DYN-${employeeId}`,
+      isDynamic: true,
     };
   }
 
-  // --- Contract: GetEmployeeAccessState (Table 32) ---
-  async getEmployeeAccessState(employeeId: string) {
-    const employee = this.employeesStore.get(employeeId);
-    if (!employee) {
+  private generateLegacyPresentation(employeeId: string) {
+    const employee =
+      this.legacyUsers.get(employeeId) ||
+      [...this.legacyUsers.values()].find(
+        (user) => user.employeeId === employeeId,
+      );
+    if (!employee)
       throw new NotFoundException(`Employee ${employeeId} not found`);
-    }
-    return {
-      employeeId: employee.id,
-      fullName: employee.fullName,
-      factoryId: employee.factoryId,
-      status: employee.status,
-      department: employee.department,
-      role: employee.role,
-    };
-  }
-
-  // --- Contract: GetCurrentCredential (Table 32 & UC-01) ---
-  async getCurrentCredential(employeeId: string) {
-    const employee = await this.getEmployeeAccessState(employeeId);
-    // Find active credential for employee
-    let activeCred: any = null;
-    for (const cred of this.credentialsStore.values()) {
-      if (cred.employeeId === employeeId && cred.status === CredentialStatus.ACTIVE) {
-        if (!activeCred || cred.version > activeCred.version) {
-          activeCred = cred;
-        }
-      }
-    }
-
-    if (!activeCred) {
-      // Auto-issue standard credential if none exists
-      return this.issueCredential({ employeeId });
-    }
-
-    return {
-      employee,
-      credential: activeCred,
-    };
-  }
-
-  // --- M2 Contract: GenerateDynamicQR (ADR-007 Rotating QR Anti-Spoofing) ---
-  async generateDynamicQR(employeeId: string) {
-    const employee = await this.getEmployeeAccessState(employeeId);
-    if (employee.status !== EmployeeStatus.ACTIVE) {
-      throw new BadRequestException(`Employee ${employeeId} is inactive, cannot issue dynamic QR`);
-    }
-
+    if (employee.status !== UserStatus.ACTIVE)
+      throw new BadRequestException('Inactive users cannot issue dynamic QR');
     const now = Date.now();
     const nonce = crypto.randomBytes(4).toString('hex');
     const signature = crypto
-      .createHmac('sha256', this.HMAC_SECRET)
+      .createHmac('sha256', this.legacySecret)
       .update(`${employeeId}:${now}:${nonce}`)
       .digest('hex')
-      .substring(0, 16);
-
-    const qrPayload = `TMC:DYN:${employeeId}:${now}:${nonce}:${signature}`;
-    const validDurationSeconds = 60;
-    const expiresAt = new Date(now + validDurationSeconds * 1000);
-
+      .slice(0, 16);
+    const expiresAt = new Date(now + 60_000);
     return {
-      employeeId: employee.employeeId,
+      employeeId,
       employeeName: employee.fullName,
       factoryId: employee.factoryId,
-      qrPayload,
+      qrPayload: `TMC:DYN:${employeeId}:${now}:${nonce}:${signature}`,
       generatedAt: new Date(now).toISOString(),
       expiresAt: expiresAt.toISOString(),
-      validDurationSeconds,
+      validDurationSeconds: 60,
     };
   }
 
-  // --- Contract: ApplyEmployeeUpdates (Table 32 & FR-UM-01) ---
-  async applyEmployeeUpdates(dto: SyncEmployeeDto) {
-    const existing = this.employeesStore.get(dto.id) || {};
-    const updated = {
-      ...existing,
-      ...dto,
-      updatedAt: new Date(),
-    };
-    this.employeesStore.set(dto.id, updated);
-    this.logger.log(`Synchronized employee record: ${dto.id} - ${dto.fullName} (${dto.status})`);
-    return updated;
+  async generateDynamicQR(employeeId: string) {
+    const numericUser = await this.findUserIdByEmployeeCode(employeeId);
+    return numericUser
+      ? this.generatePresentation(numericUser)
+      : this.generateLegacyPresentation(employeeId);
   }
 
-  // --- UC-02: Issue QR Credential (FR-UM-02) ---
-  async issueCredential(dto: IssueQRCredentialDto) {
-    const employee = this.employeesStore.get(dto.employeeId);
-    if (!employee) {
-      throw new NotFoundException(`Employee ${dto.employeeId} not found`);
-    }
+  private async findUserIdByEmployeeCode(employeeCode: string) {
+    if (!this.userModel) return null;
+    const user = await this.userModel.findOne({ where: { employeeCode } });
+    return user?.id ?? null;
+  }
 
-    const now = new Date();
-    const days = dto.validDays || 1;
-    const expiresAt = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
-    const credentialId = `CRED-${dto.employeeId.replace('EMP-', '')}-${Date.now().toString().slice(-4)}`;
-    const randomSecret = crypto.randomBytes(6).toString('hex').toUpperCase();
-    const qrPayload = `TMC:QR:${dto.employeeId}:V1:${randomSecret}`;
+  async getCurrentCredential(employeeId: string) {
+    const numericUser = await this.findUserIdByEmployeeCode(employeeId);
+    const credential = numericUser
+      ? await this.getMyCredential(numericUser)
+      : [...this.legacyCredentials.values()].find(
+          (item) => item.employeeId === employeeId,
+        );
+    return credential ?? { message: 'No QR credential issued' };
+  }
 
-    const newCred = {
-      credentialId,
-      employeeId: dto.employeeId,
-      qrPayload,
-      status: CredentialStatus.ACTIVE,
-      version: 1,
-      issuedAt: now,
-      expiresAt,
-    };
+  async issueCredentialLegacy(employeeId: string) {
+    return this.issueCredential(employeeId);
+  }
 
-    this.credentialsStore.set(credentialId, newCred);
-    this.logger.log(`Issued new QR Credential ${credentialId} for ${dto.employeeId}`);
+  private publicCredential(credential: QRCredentialModel) {
     return {
-      employee,
-      credential: newCred,
+      id: credential.id,
+      credentialUuid: credential.credentialUuid,
+      userId: credential.userId,
+      status: credential.status,
+      issuedAt: credential.issuedAt,
+      expiresAt: credential.expiresAt,
+      revokedAt: credential.revokedAt,
     };
-  }
-
-  // --- UC-02: Update QR Credential Status (FR-UM-03) ---
-  async updateCredentialStatus(dto: UpdateCredentialStatusDto) {
-    const cred = this.credentialsStore.get(dto.credentialId);
-    if (!cred) {
-      throw new NotFoundException(`Credential ${dto.credentialId} not found`);
-    }
-
-    cred.status = dto.status;
-    cred.updatedAt = new Date();
-    this.credentialsStore.set(dto.credentialId, cred);
-    this.logger.log(`Credential ${dto.credentialId} status changed to ${dto.status} by ${dto.updatedBy}`);
-
-    return {
-      success: true,
-      credentialId: dto.credentialId,
-      status: dto.status,
-      updatedAt: cred.updatedAt,
-    };
-  }
-
-  async listEmployees() {
-    return Array.from(this.employeesStore.values());
-  }
-
-  async listCredentials() {
-    return Array.from(this.credentialsStore.values());
   }
 }

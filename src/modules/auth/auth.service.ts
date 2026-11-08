@@ -24,10 +24,21 @@ export class AuthService {
 
   constructor(private readonly jwtService: JwtService) {}
 
+  private requireUserId(id: string | undefined): string {
+    if (!id) {
+      throw new UnauthorizedException('Thông tin người dùng không hợp lệ');
+    }
+    return id;
+  }
+
   private async findUserByEmail(email: string): Promise<UserAttributes | null> {
     try {
       const user = await UserModel.findOne({ where: { email } });
-      if (user) return user.get({ plain: true });
+      if (user) {
+        this.logger.log(`[Database] User lookup successful for "${email}".`);
+        return user.get({ plain: true });
+      }
+      this.logger.warn(`[Database] No user found for "${email}".`);
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Database query failed: ${errorMsg}`);
@@ -138,32 +149,54 @@ export class AuthService {
     const user = await this.findUserByEmail(loginDto.email);
 
     if (!user) {
+      this.logger.warn(
+        `[Auth Failed] Login rejected for "${loginDto.email}": user not found.`,
+      );
       throw new UnauthorizedException('Thông tin đăng nhập không chính xác');
     }
 
     // Check account status
     if (user.status !== UserStatus.ACTIVE) {
+      this.logger.warn(
+        `[Auth Failed] Login rejected for "${loginDto.email}": account status is ${user.status}.`,
+      );
       throw new UnauthorizedException(
         'Tài khoản của bạn đã bị vô hiệu hóa hoặc tạm khóa',
       );
     }
 
     // Verify password
-    const isPasswordValid = await bcrypt.compare(
-      loginDto.password,
-      user.passwordHash,
-    );
+    let isPasswordValid = false;
+    try {
+      isPasswordValid = await bcrypt.compare(
+        loginDto.password,
+        user.passwordHash,
+      );
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `[Database] Password verification failed for "${loginDto.email}": ${errorMessage}`,
+      );
+      throw new UnauthorizedException('Thông tin đăng nhập không chính xác');
+    }
 
     if (!isPasswordValid) {
+      this.logger.warn(
+        `[Auth Failed] Login rejected for "${loginDto.email}": password is incorrect.`,
+      );
       throw new UnauthorizedException('Thông tin đăng nhập không chính xác');
     }
 
     // Generate tokens
-    const tokens = await this.generateTokens(user);
+    const userId = this.requireUserId(user.id);
+    const tokens = await this.generateTokens({ ...user, id: userId });
 
     // Hash refresh token and persist
-    await this.revokeUserTokens(user.id);
-    await this.storeTokens(user.id, tokens.accessToken, tokens.refreshToken);
+    await this.revokeUserTokens(userId);
+    await this.storeTokens(userId, tokens.accessToken, tokens.refreshToken);
+    this.logger.log(
+      `[Database] Authentication tokens stored for user "${user.email}".`,
+    );
 
     this.logger.log(
       `[Auth Success] User "${user.email}" (${user.role}) logged in successfully.`,
@@ -226,9 +259,10 @@ export class AuthService {
     }
 
     // Token is valid: Rotate tokens
-    const tokens = await this.generateTokens(user);
+    const userId = this.requireUserId(user.id);
+    const tokens = await this.generateTokens({ ...user, id: userId });
     await refreshToken.update({ revoked: true });
-    await this.storeTokens(user.id, tokens.accessToken, tokens.refreshToken);
+    await this.storeTokens(userId, tokens.accessToken, tokens.refreshToken);
 
     this.logger.log(
       `[Token Rotated] Refreshed tokens for user "${user.email}"`,

@@ -20,7 +20,7 @@ import {
   SyncOfflineResultDto,
   SyncOfflineScansDto,
 } from './dto/access-event.dto';
-import { EmployeeStatus } from '../user-qr/model/employee.model';
+import { UserStatus } from '../users/model/user.model';
 
 @Injectable()
 export class AttendanceEventService {
@@ -112,7 +112,7 @@ export class AttendanceEventService {
 
     // 4. Current Authorization Evaluation (ADR-002: Stage 2)
     // Check Employee Active Status
-    if (credValidation.employeeStatus !== EmployeeStatus.ACTIVE) {
+    if (credValidation.employeeStatus !== UserStatus.ACTIVE) {
       return this.persistAndReturnDenial(
         dto.requestId,
         station,

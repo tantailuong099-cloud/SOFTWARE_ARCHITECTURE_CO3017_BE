@@ -9,7 +9,15 @@ import {
 
 export enum UserRole {
   EMPLOYEE = 'EMPLOYEE',
+  SUPERVISOR = 'SUPERVISOR',
+  HR_STAFF = 'HR_STAFF',
+  SECURITY_GUARD = 'SECURITY_GUARD',
   ADMIN = 'ADMIN',
+}
+
+export enum FactoryId {
+  BINH_DUONG = 'BINH_DUONG',
+  LONG_AN = 'LONG_AN',
 }
 
 export enum UserStatus {
@@ -18,13 +26,14 @@ export enum UserStatus {
 }
 
 export interface UserAttributes {
-  id: string;
+  id?: string;
   employeeCode: string;
   fullName: string;
   email: string;
   passwordHash: string;
   role: UserRole;
   status: UserStatus;
+  factoryId?: FactoryId | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -73,11 +82,6 @@ export class UserModel extends Model<UserAttributes> implements UserAttributes {
   declare passwordHash: string;
 
   @Column({
-    type: DataType.STRING(255),
-    allowNull: true,
-    field: 'refresh_token_hash',
-  })
-  @Column({
     type: DataType.ENUM(...Object.values(UserRole)),
     allowNull: false,
     defaultValue: UserRole.EMPLOYEE,
@@ -90,4 +94,22 @@ export class UserModel extends Model<UserAttributes> implements UserAttributes {
     defaultValue: UserStatus.ACTIVE,
   })
   declare status: UserStatus;
+
+  @Column({
+    type: DataType.ENUM(...Object.values(FactoryId)),
+    allowNull: true,
+    field: 'factory_id',
+  })
+  declare factoryId?: FactoryId | null;
+
+  @Column({
+    type: DataType.STRING(255),
+    allowNull: true,
+    field: 'refresh_token_hash',
+  })
+  declare refreshTokenHash?: string | null;
+
+  declare createdAt: Date;
+
+  declare updatedAt: Date;
 }

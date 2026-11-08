@@ -1,6 +1,6 @@
 import { AccessDecision, ControllerOutcome } from '../model/access-event.model';
 import { GateDirection } from '../../gate-station/model/gate-station.model';
-import { FactoryId } from '../../user-qr/model/employee.model';
+import { FactoryId } from '../../users/model/user.model';
 
 export class SubmitAccessScanDto {
   requestId: string;
