@@ -1,6 +1,6 @@
 import { Table, Column, Model, DataType, PrimaryKey, Unique } from 'sequelize-typescript';
 import { GateDirection } from '../../gate-station/model/gate-station.model';
-import { FactoryId } from '../../user-qr/model/employee.model';
+import { FactoryId } from '../../users/model/user.model';
 
 export enum AccessDecision {
   APPROVED = 'APPROVED',

@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import {
   DynamicModule,
   Injectable,
@@ -10,6 +11,8 @@ import { SequelizeModule } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { TokenModel } from '../modules/auth/model/token.model';
 import { UserModel } from '../modules/users/model/user.model';
+import { QRCredentialModel } from '../modules/user-qr/model/qr-credential.model';
+import { QRPresentationModel } from '../modules/user-qr/model/qr-presentation.model';
 
 @Injectable()
 export class DatabaseConnectionChecker implements OnModuleInit {
@@ -79,7 +82,12 @@ export class DatabaseModule {
                     ),
                   }),
               autoLoadModels: true,
-              models: [UserModel, TokenModel],
+              models: [
+                UserModel,
+                TokenModel,
+                QRCredentialModel,
+                QRPresentationModel,
+              ],
               synchronize: false,
               logging: false,
               ...(sslRequired
