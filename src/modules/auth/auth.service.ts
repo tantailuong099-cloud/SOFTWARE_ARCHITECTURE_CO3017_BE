@@ -24,6 +24,13 @@ export class AuthService {
 
   constructor(private readonly jwtService: JwtService) {}
 
+  private requireUserId(id: string | undefined): string {
+    if (!id) {
+      throw new UnauthorizedException('Thông tin người dùng không hợp lệ');
+    }
+    return id;
+  }
+
   private async findUserByEmail(email: string): Promise<UserAttributes | null> {
     try {
       const user = await UserModel.findOne({ where: { email } });
@@ -181,11 +188,12 @@ export class AuthService {
     }
 
     // Generate tokens
-    const tokens = await this.generateTokens(user);
+    const userId = this.requireUserId(user.id);
+    const tokens = await this.generateTokens({ ...user, id: userId });
 
     // Hash refresh token and persist
-    await this.revokeUserTokens(user.id);
-    await this.storeTokens(user.id, tokens.accessToken, tokens.refreshToken);
+    await this.revokeUserTokens(userId);
+    await this.storeTokens(userId, tokens.accessToken, tokens.refreshToken);
     this.logger.log(
       `[Database] Authentication tokens stored for user "${user.email}".`,
     );
@@ -251,9 +259,10 @@ export class AuthService {
     }
 
     // Token is valid: Rotate tokens
-    const tokens = await this.generateTokens(user);
+    const userId = this.requireUserId(user.id);
+    const tokens = await this.generateTokens({ ...user, id: userId });
     await refreshToken.update({ revoked: true });
-    await this.storeTokens(user.id, tokens.accessToken, tokens.refreshToken);
+    await this.storeTokens(userId, tokens.accessToken, tokens.refreshToken);
 
     this.logger.log(
       `[Token Rotated] Refreshed tokens for user "${user.email}"`,

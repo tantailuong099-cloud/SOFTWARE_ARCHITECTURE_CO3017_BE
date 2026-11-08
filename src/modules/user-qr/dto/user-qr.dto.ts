@@ -1,13 +1,13 @@
-import { EmployeeRole, EmployeeStatus, FactoryId } from '../model/employee.model';
+import { FactoryId, UserRole, UserStatus } from '../../users/model/user.model';
 import { CredentialStatus } from '../model/qr-credential.model';
 
 export class SyncEmployeeDto {
   id: string;
   fullName: string;
   factoryId: FactoryId;
-  status: EmployeeStatus;
+  status: UserStatus;
   department?: string;
-  role?: EmployeeRole;
+  role?: UserRole;
 }
 
 export class IssueQRCredentialDto {
@@ -29,7 +29,7 @@ export interface CredentialValidationResult {
   employeeId?: string;
   employeeName?: string;
   factoryId?: FactoryId;
-  employeeStatus?: EmployeeStatus;
+  employeeStatus?: UserStatus;
   credentialId?: string;
   credentialStatus?: CredentialStatus;
   version?: number;

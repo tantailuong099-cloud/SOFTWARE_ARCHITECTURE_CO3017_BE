@@ -1,47 +1,45 @@
-import { Controller, Get, Post, Body, Param } from '@nestjs/common';
+import { Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { UserQRService } from './user-qr.service';
-import {
-  IssueQRCredentialDto,
-  SyncEmployeeDto,
-  UpdateCredentialStatusDto,
-} from './dto/user-qr.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { UserRole } from '../users/model/user.model';
 
-@Controller('api/user-qr')
+@Controller('api/qr')
 export class UserQRController {
   constructor(private readonly userQRService: UserQRService) {}
 
-  @Get('employees')
-  async listEmployees() {
-    return this.userQRService.listEmployees();
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  getMyCredential(@CurrentUser('id') userId: string) {
+    return this.userQRService.getMyCredential(userId);
+  }
+
+  @Post('me/presentations')
+  @UseGuards(JwtAuthGuard)
+  generatePresentation(@CurrentUser('id') userId: string) {
+    return this.userQRService.generatePresentation(userId);
   }
 
   @Get('credentials')
-  async listCredentials() {
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  listDbCredentials() {
     return this.userQRService.listCredentials();
   }
 
-  @Get('employees/:id/qr')
-  async getEmployeeQR(@Param('id') id: string) {
-    return this.userQRService.getCurrentCredential(id);
+  @Post('credentials/:userId/issue')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  issueDbCredential(@Param('userId') userId: string) {
+    return this.userQRService.issueCredential(userId);
   }
 
-  @Get('employees/:id/dynamic-qr')
-  async getEmployeeDynamicQR(@Param('id') id: string) {
-    return this.userQRService.generateDynamicQR(id);
-  }
-
-  @Post('credentials/issue')
-  async issueCredential(@Body() dto: IssueQRCredentialDto) {
-    return this.userQRService.issueCredential(dto);
-  }
-
-  @Post('credentials/status')
-  async updateStatus(@Body() dto: UpdateCredentialStatusDto) {
-    return this.userQRService.updateCredentialStatus(dto);
-  }
-
-  @Post('employees/sync')
-  async syncEmployee(@Body() dto: SyncEmployeeDto) {
-    return this.userQRService.applyEmployeeUpdates(dto);
+  @Patch('credentials/:id/revoke')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  revokeDbCredential(@Param('id') id: string) {
+    return this.userQRService.revokeCredential(id);
   }
 }

@@ -1,5 +1,5 @@
 import { Table, Column, Model, DataType, PrimaryKey } from 'sequelize-typescript';
-import { FactoryId } from '../../user-qr/model/employee.model';
+import { FactoryId } from '../../users/model/user.model';
 
 export enum GateDirection {
   ENTRY = 'ENTRY',

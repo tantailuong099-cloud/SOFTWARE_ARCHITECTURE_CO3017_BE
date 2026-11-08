@@ -1,4 +1,4 @@
-import { FactoryId } from '../../user-qr/model/employee.model';
+import { FactoryId } from '../../users/model/user.model';
 import { GateDirection, GateStationStatus } from '../model/gate-station.model';
 
 export class RegisterGateStationDto {

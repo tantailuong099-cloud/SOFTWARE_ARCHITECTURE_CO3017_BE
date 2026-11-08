@@ -26,7 +26,7 @@ export enum UserStatus {
 }
 
 export interface UserAttributes {
-  id: string;
+  id?: string;
   employeeCode: string;
   fullName: string;
   email: string;
@@ -108,4 +108,8 @@ export class UserModel extends Model<UserAttributes> implements UserAttributes {
     field: 'refresh_token_hash',
   })
   declare refreshTokenHash?: string | null;
+
+  declare createdAt: Date;
+
+  declare updatedAt: Date;
 }
