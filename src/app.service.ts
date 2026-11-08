@@ -14,8 +14,12 @@ export class AppService {
         attendanceEventRecording: 'LOADED',
         turnstileAdapter: 'LOADED',
       },
-      supportedFactories: ['BINH_DUONG (~800 employees)', 'LONG_AN (~600 employees)'],
-      kpiRequirement: 'Kiosk response time <= 2.0s under peak workload (NFR-PERF-01)',
+      supportedFactories: [
+        'BINH_DUONG (~800 employees)',
+        'LONG_AN (~600 employees)',
+      ],
+      kpiRequirement:
+        'Kiosk response time <= 2.0s under peak workload (NFR-PERF-01)',
     };
   }
 }

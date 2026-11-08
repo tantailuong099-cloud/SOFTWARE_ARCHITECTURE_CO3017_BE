@@ -43,6 +43,12 @@ export default tseslint.config(
     },
   },
   {
+    files: ['src/modules/*/dto/*.ts'],
+    rules: {
+      '@typescript-eslint/no-unsafe-call': 'off',
+    },
+  },
+  {
     files: ['sequelize/migrations/*.js'],
     rules: {
       '@typescript-eslint/no-unsafe-assignment': 'off',
