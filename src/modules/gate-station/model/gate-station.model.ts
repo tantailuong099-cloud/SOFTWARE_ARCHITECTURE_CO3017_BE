@@ -1,4 +1,11 @@
-import { Table, Column, Model, DataType, PrimaryKey } from 'sequelize-typescript';
+import {
+  Column,
+  DataType,
+  Model,
+  PrimaryKey,
+  Table,
+  Unique,
+} from 'sequelize-typescript';
 import { FactoryId } from '../../users/model/user.model';
 
 export enum GateDirection {
@@ -8,61 +15,63 @@ export enum GateDirection {
 
 export enum GateStationStatus {
   ACTIVE = 'ACTIVE',
-  DISABLED = 'DISABLED',
+  INACTIVE = 'INACTIVE',
 }
 
 @Table({
   tableName: 'gate_stations',
   timestamps: true,
+  underscored: true,
 })
 export class GateStationModel extends Model {
   @PrimaryKey
   @Column({
-    type: DataType.STRING,
+    type: DataType.BIGINT,
+    autoIncrement: true,
     allowNull: false,
   })
-  declare stationId: string; // e.g. BD-GATE-01
+  declare id: string;
+
+  @Unique
+  @Column({
+    type: DataType.STRING(50),
+    allowNull: false,
+    field: 'station_code',
+  })
+  declare stationCode: string;
 
   @Column({
-    type: DataType.ENUM(...Object.values(FactoryId)),
+    type: DataType.STRING(150),
     allowNull: false,
+  })
+  declare name: string;
+
+  @Column({
+    type: DataType.STRING(20),
+    allowNull: false,
+    field: 'factory_id',
   })
   declare factoryId: FactoryId;
 
   @Column({
-    type: DataType.STRING,
-    allowNull: false,
-  })
-  declare gateIdentifier: string; // e.g. GATE_01_MAIN
-
-  @Column({
-    type: DataType.ENUM(...Object.values(GateDirection)),
+    type: DataType.STRING(10),
     allowNull: false,
   })
   declare direction: GateDirection;
 
   @Column({
-    type: DataType.ENUM(...Object.values(GateStationStatus)),
+    type: DataType.STRING(255),
+    allowNull: false,
+  })
+  declare location: string;
+
+  @Column({
+    type: DataType.STRING(20),
     allowNull: false,
     defaultValue: GateStationStatus.ACTIVE,
   })
   declare status: GateStationStatus;
 
-  @Column({
-    type: DataType.STRING,
-    allowNull: false,
-  })
-  declare stationApiKey: string;
-
-  @Column({
-    type: DataType.STRING,
-    allowNull: false,
-  })
-  declare controllerEndpoint: string;
-
-  @Column({
-    type: DataType.DATE,
-    allowNull: true,
-  })
-  declare lastHeartbeat: Date;
+  declare createdAt: Date;
+  declare updatedAt: Date;
 }

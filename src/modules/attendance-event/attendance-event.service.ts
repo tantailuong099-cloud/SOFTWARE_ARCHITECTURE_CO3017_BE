@@ -1,4 +1,11 @@
-import { Injectable, Logger, Inject } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  Inject,
+  NotFoundException,
+} from '@nestjs/common';
 import * as crypto from 'crypto';
 import { UserQRService } from '../user-qr/user-qr.service';
 import { GateStationService } from '../gate-station/gate-station.service';
@@ -7,10 +14,7 @@ import {
   TURNSTILE_PORT,
   TurnstileCommandResult,
 } from '../../adapters/turnstile/turnstile.port';
-import {
-  AccessDecision,
-  ControllerOutcome,
-} from './model/access-event.model';
+import { AccessDecision, ControllerOutcome } from './model/access-event.model';
 import {
   AccessScanResponseDto,
   ExportHRBatchDto,
@@ -21,6 +25,7 @@ import {
   SyncOfflineScansDto,
 } from './dto/access-event.dto';
 import { UserStatus } from '../users/model/user.model';
+import type { GateStationContext } from '../gate-station/dto/gate-station.dto';
 
 @Injectable()
 export class AttendanceEventService {
@@ -38,7 +43,9 @@ export class AttendanceEventService {
   ) {}
 
   // --- Main Mission-Critical Gate Transaction: UC-03 & ADR-003 ---
-  async submitAccessScan(dto: SubmitAccessScanDto): Promise<AccessScanResponseDto> {
+  async submitAccessScan(
+    dto: SubmitAccessScanDto,
+  ): Promise<AccessScanResponseDto> {
     const startTime = Date.now();
     const correlationId = `CORR-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
 
@@ -49,25 +56,37 @@ export class AttendanceEventService {
     // 1. Idempotency Check (NFR-DI-02 & ADR-003)
     if (this.requestRegistry.has(dto.requestId)) {
       const cached = this.requestRegistry.get(dto.requestId);
-      this.logger.warn(`[Duplicate Request Detected] Returning established result for ReqID ${dto.requestId}`);
+      this.logger.warn(
+        `[Duplicate Request Detected] Returning established result for ReqID ${dto.requestId}`,
+      );
       return {
         ...cached,
         isCachedDuplicate: true,
       };
     }
 
-    // 2. Station Authentication (FR-GS-02 & Step 1 in Fig 15)
-    const stationAuth = await this.gateStationService.authenticateStation(
-      dto.stationId,
-      dto.apiKey,
-    );
-
-    if (!stationAuth.isAuthenticated || !stationAuth.stationContext) {
+    // Validate the selected predefined station before QR processing.
+    let station: GateStationContext;
+    try {
+      station = await this.gateStationService.validateActiveStation(
+        dto.stationId,
+      );
+    } catch (error) {
+      let reasonCode: string;
+      if (error instanceof NotFoundException) {
+        reasonCode = 'STATION_NOT_FOUND';
+      } else if (error instanceof ForbiddenException) {
+        reasonCode = 'STATION_INACTIVE';
+      } else if (error instanceof BadRequestException) {
+        reasonCode = 'INVALID_STATION_CONFIGURATION';
+      } else {
+        throw error;
+      }
       const elapsed = Date.now() - startTime;
       const response: AccessScanResponseDto = {
         requestId: dto.requestId,
         accessDecision: AccessDecision.DENIED,
-        reasonCode: stationAuth.denialReason || 'STATION_AUTHENTICATION_FAILED',
+        reasonCode,
         controllerOutcome: ControllerOutcome.NOT_APPLICABLE,
         serverTimestamp: new Date(),
         processingLatencyMs: elapsed,
@@ -76,15 +95,17 @@ export class AttendanceEventService {
       return response;
     }
 
-    const station = stationAuth.stationContext;
-
     // 3. Credential Validation (ADR-002: Stage 1)
-    const credValidation = await this.userQRService.validateCredential(dto.qrPayload);
+    const credValidation = await this.userQRService.validateCredential(
+      dto.qrPayload,
+    );
 
     // Unrecognized or out-of-scope QR: Rejected without raw event per FR-AE-03
     if (!credValidation.isRecognized) {
       const elapsed = Date.now() - startTime;
-      this.logger.warn(`[Unrecognized QR] Payload outside company scope. ReqID: ${dto.requestId}`);
+      this.logger.warn(
+        `[Unrecognized QR] Payload outside company scope. ReqID: ${dto.requestId}`,
+      );
       const response: AccessScanResponseDto = {
         requestId: dto.requestId,
         accessDecision: AccessDecision.DENIED,
@@ -149,14 +170,16 @@ export class AttendanceEventService {
       requestId: dto.requestId,
       employeeId: credValidation.employeeId!,
       employeeName: credValidation.employeeName!,
-      stationId: station.stationId,
+      stationId: station.stationCode,
       factoryId: station.factoryId,
       direction: station.direction,
       accessDecision: AccessDecision.APPROVED,
       denialReason: null,
       controllerOutcome: ControllerOutcome.CONTROLLER_PENDING,
       serverTimestamp,
-      deviceTimestamp: dto.deviceTimestamp ? new Date(dto.deviceTimestamp) : null,
+      deviceTimestamp: dto.deviceTimestamp
+        ? new Date(dto.deviceTimestamp)
+        : null,
       correlationId,
       policyVersion: 'v1.0',
     };
@@ -170,14 +193,16 @@ export class AttendanceEventService {
       const turnstileRes = await this.turnstileAdapter.unlockTurnstile({
         requestId: dto.requestId,
         eventId,
-        controllerReference: station.controllerEndpoint,
-        stationId: station.stationId,
+        controllerReference: station.stationCode,
+        stationId: station.stationCode,
         direction: station.direction,
       });
 
       if (turnstileRes.result === TurnstileCommandResult.UNLOCK_CONFIRMED) {
         finalControllerOutcome = ControllerOutcome.CONTROLLER_CONFIRMED;
-      } else if (turnstileRes.result === TurnstileCommandResult.MECHANICAL_FAULT) {
+      } else if (
+        turnstileRes.result === TurnstileCommandResult.MECHANICAL_FAULT
+      ) {
         finalControllerOutcome = ControllerOutcome.CONTROLLER_FAILED;
       } else {
         finalControllerOutcome = ControllerOutcome.CONTROLLER_UNKNOWN;
@@ -230,7 +255,7 @@ export class AttendanceEventService {
       requestId,
       employeeId: employeeId || 'UNKNOWN',
       employeeName: employeeName || 'UNKNOWN',
-      stationId: station.stationId,
+      stationId: station.stationCode,
       factoryId: station.factoryId,
       direction: station.direction,
       accessDecision: AccessDecision.DENIED,
@@ -292,15 +317,21 @@ export class AttendanceEventService {
       result = result.filter((e) => e.accessDecision === dto.accessDecision);
     }
 
-    result.sort((a, b) => b.serverTimestamp.getTime() - a.serverTimestamp.getTime());
+    result.sort(
+      (a, b) => b.serverTimestamp.getTime() - a.serverTimestamp.getTime(),
+    );
 
     if (dto.limit) {
       result = result.slice(0, dto.limit);
     }
 
     const total = result.length;
-    const approved = result.filter((e) => e.accessDecision === AccessDecision.APPROVED).length;
-    const denied = result.filter((e) => e.accessDecision === AccessDecision.DENIED).length;
+    const approved = result.filter(
+      (e) => e.accessDecision === AccessDecision.APPROVED,
+    ).length;
+    const denied = result.filter(
+      (e) => e.accessDecision === AccessDecision.DENIED,
+    ).length;
 
     return {
       total,
@@ -324,12 +355,16 @@ export class AttendanceEventService {
       sampleEvents: rawEvents.slice(0, 5),
     };
 
-    this.logger.log(`Exported HR/Payroll Batch ${batchId} with ${rawEvents.length} raw events`);
+    this.logger.log(
+      `Exported HR/Payroll Batch ${batchId} with ${rawEvents.length} raw events`,
+    );
     return batch;
   }
 
   // --- M2 Contract: SyncOfflineScans (ADR-008 Edge Resilience & Store-and-Forward) ---
-  async syncOfflineScans(dto: SyncOfflineScansDto): Promise<SyncOfflineResultDto> {
+  async syncOfflineScans(
+    dto: SyncOfflineScansDto,
+  ): Promise<SyncOfflineResultDto> {
     this.logger.log(
       `[Offline Sync Batch Received] Station: ${dto.stationId}, Items: ${dto.scans?.length || 0}`,
     );
@@ -339,13 +374,12 @@ export class AttendanceEventService {
     let processedCount = 0;
 
     for (const scanItem of dto.scans || []) {
-      // Use existing submitAccessScan which handles idempotency, station auth, credential validation & event recording
+      // Use existing submitAccessScan for station validation, QR checks and event handling.
       const scanResult = await this.submitAccessScan({
         requestId: scanItem.requestId,
         stationId: scanItem.stationId || dto.stationId,
         qrPayload: scanItem.qrPayload,
         deviceTimestamp: scanItem.deviceTimestamp,
-        apiKey: scanItem.apiKey,
       });
 
       if (scanResult.isCachedDuplicate) {
