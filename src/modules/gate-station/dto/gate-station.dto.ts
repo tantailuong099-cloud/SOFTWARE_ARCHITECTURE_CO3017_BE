@@ -1,33 +1,18 @@
 import { FactoryId } from '../../users/model/user.model';
 import { GateDirection, GateStationStatus } from '../model/gate-station.model';
 
-export class RegisterGateStationDto {
-  stationId: string;
+export interface GateStationResponseDto {
+  id: string;
+  stationCode: string;
+  name: string;
   factoryId: FactoryId;
-  gateIdentifier: string;
   direction: GateDirection;
-  controllerEndpoint: string;
-  stationApiKey?: string;
-}
-
-export class UpdateGateStationDto {
-  status?: GateStationStatus;
-  controllerEndpoint?: string;
-  gateIdentifier?: string;
-  direction?: GateDirection;
-}
-
-export interface GateStationContext {
-  stationId: string;
-  factoryId: FactoryId;
-  gateIdentifier: string;
-  direction: GateDirection;
+  location: string;
   status: GateStationStatus;
-  controllerEndpoint: string;
+  createdAt: Date;
+  updatedAt: Date;
+  stationId: string;
+  gateIdentifier: string;
 }
 
-export interface StationAuthResult {
-  isAuthenticated: boolean;
-  stationContext?: GateStationContext;
-  denialReason?: string;
-}
+export type GateStationContext = GateStationResponseDto;
