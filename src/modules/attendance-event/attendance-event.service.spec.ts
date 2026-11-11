@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { getModelToken } from '@nestjs/sequelize';
 import { AttendanceEventService } from './attendance-event.service';
 import { UserQRService } from '../user-qr/user-qr.service';
@@ -8,6 +8,7 @@ import { TurnstileSimulatorAdapter } from '../../adapters/turnstile/turnstile-si
 import { TURNSTILE_PORT } from '../../adapters/turnstile/turnstile.port';
 import { AccessDecision, AccessEventModel, ControllerOutcome } from './model/access-event.model';
 import { FactoryId } from '../users/model/user.model';
+import { AccessScanRequestModel, ScanResultType } from './model/access-scan-request.model';
 import { GateDirection } from '../gate-station/model/gate-station.model';
 
 // Jest needs the injection token but cannot load the package's ESM entrypoint.
@@ -20,12 +21,14 @@ jest.mock('@nestjs/sequelize', () => {
 });
 
 describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003)', () => {
-  let service: AttendanceEventService;
-  let userQRService: UserQRService;
-  let gateStationService: GateStationService;
-  let turnstileAdapter: TurnstileSimulatorAdapter;
-  let eventModel : { create : jest.Mock; update : jest.Mock; findAll : jest.Mock };
+  let service : AttendanceEventService;
+  let userQRService : UserQRService;
+  let gateStationService : GateStationService;
+  let turnstileAdapter : TurnstileSimulatorAdapter;
+  let eventModel : { create : jest.Mock; update : jest.Mock; findAll : jest.Mock; findByPk : jest.Mock; sequelize : any };
+  let requestModel : { findByPk : jest.Mock; update : jest.Mock };
   let savedEvents : Array<Record<string, any>>;
+  let savedRequests : Map<string, Record<string, any>>;
   const originalDbSetting = process.env.ENABLE_DB;
 
   afterAll(() => {
@@ -51,7 +54,43 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
     } as unknown as GateStationService;
 
     savedEvents = [];
+    savedRequests = new Map();
+    let transactionQueue = Promise.resolve();
+    const database = {
+      query : jest.fn(async (_sql : string, options : any) => {
+        const { requestId, stationId, fingerprint } = options.replacements;
+        const claims = options.transaction.claims as Map<string, Record<string, any>>;
+        if (savedRequests.has(requestId) || claims.has(requestId)) return [[], {}];
+        claims.set(requestId, {
+          requestId, stationId, requestFingerprint : fingerprint, resultType : null,
+          eventId : null, reasonCode : null, serverTimestamp : new Date(),
+        });
+        return [[{ request_id : requestId }], {}];
+      }),
+      transaction : jest.fn(async (callback : (transaction : any) => Promise<any>) => {
+        // Serialize fake transactions; database-level concurrency is checked separately against PostgreSQL.
+        let release : () => void = () => {};
+        const current = new Promise<void>((resolve) => { release = resolve; });
+        const previous = transactionQueue;
+        transactionQueue = current;
+        await previous;
+        const before = savedEvents.map((event) => ({ ...event }));
+        const transaction = { claims : new Map<string, Record<string, any>>(), LOCK : { UPDATE : 'UPDATE' } };
+        try {
+          const result = await callback(transaction);
+          for (const [requestId, claim] of transaction.claims) savedRequests.set(requestId, claim);
+          return result;
+        } catch (error) {
+          savedEvents = before;
+          throw error;
+        } finally {
+          release();
+        }
+      }),
+    };
+
     eventModel = {
+      sequelize : database,
       create : jest.fn(async (values : Record<string, any>) => {
         savedEvents.push({ ...values });
         return values;
@@ -61,6 +100,7 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
         if (event) Object.assign(event, values);
         return [event ? 1 : 0];
       }),
+      findByPk : jest.fn(async (eventId : string) => savedEvents.find((event) => event.eventId === eventId) ?? null),
       findAll : jest.fn(async (options? : { where? : Record<string, string>; limit? : number }) => {
         const where = options?.where ?? {};
         const matching = savedEvents.filter((item) => Object.entries(where).every(([key, value]) => item[key] === value));
@@ -68,17 +108,27 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
         return matching.slice(0, options?.limit ?? matching.length);
       }),
     };
+    requestModel = {
+      findByPk : jest.fn(async (requestId : string, options? : { transaction? : any }) => {
+        return options?.transaction?.claims.get(requestId) ?? savedRequests.get(requestId) ?? null;
+      }),
+      update : jest.fn(async (values : Record<string, any>, options : { where : { requestId : string }; transaction : any }) => {
+        const record = options.transaction.claims.get(options.where.requestId);
+        if (record) Object.assign(record, values);
+        return [record ? 1 : 0];
+      }),
+    };
 
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
+    const module : TestingModule = await Test.createTestingModule({
+      providers : [
         AttendanceEventService,
-        { provide: UserQRService, useValue: userQRService },
-        { provide: GateStationService, useValue: gateStationService },
-        { provide: TURNSTILE_PORT, useValue: turnstileAdapter },
-        { provide: getModelToken(AccessEventModel), useValue: eventModel },
+        { provide : UserQRService, useValue : userQRService },
+        { provide : GateStationService, useValue : gateStationService },
+        { provide : TURNSTILE_PORT, useValue : turnstileAdapter },
+        { provide : getModelToken(AccessEventModel), useValue : eventModel },
+        { provide : getModelToken(AccessScanRequestModel), useValue : requestModel },
       ],
     }).compile();
-
     service = module.get<AttendanceEventService>(AttendanceEventService);
   });
 
@@ -206,6 +256,7 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
   });
 
   it('10. [M2-Issue 1] should process offline synchronized scan batches idempotently (ADR-008)', async () => {
+    const deviceTimestamp = new Date().toISOString();
     const syncResult = await service.syncOfflineScans({
       stationId: 'BD-GATE-01',
       syncTimestamp: new Date().toISOString(),
@@ -214,13 +265,13 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
           requestId: 'REQ-OFFLINE-001',
           stationId: 'BD-GATE-01',
           qrPayload: 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
-          deviceTimestamp: new Date().toISOString(),
+          deviceTimestamp,
         },
         {
           requestId: 'REQ-OFFLINE-002',
           stationId: 'BD-GATE-01',
           qrPayload: 'TMC:QR:EMP-BD-003:V1:SEC_EXPIRED_KEY_003',
-          deviceTimestamp: new Date().toISOString(),
+          deviceTimestamp,
         },
       ],
     });
@@ -240,7 +291,7 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
           requestId: 'REQ-OFFLINE-001',
           stationId: 'BD-GATE-01',
           qrPayload: 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
-          deviceTimestamp: new Date().toISOString(),
+          deviceTimestamp,
         },
       ],
     });
@@ -282,5 +333,114 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
     })).rejects.toThrow('DATABASE_WRITE_FAILED');
 
     expect(unlock).not.toHaveBeenCalled();
+  });
+
+  it('13. rejects conflicting reuse of a Request ID', async () => {
+    const initial = {
+      requestId : 'REQ-CONFLICT', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+    };
+    await service.submitAccessScan(initial);
+    const unlock = jest.spyOn(turnstileAdapter, 'unlockTurnstile');
+    await expect(service.submitAccessScan({
+      ...initial, qrPayload : 'TMC:QR:EMP-BD-002:V1:SEC_SUSPENDED_KEY_002',
+    })).rejects.toThrow(ConflictException);
+    await expect(service.submitAccessScan({ ...initial, stationId : 'OTHER-STATION' })).rejects.toThrow(ConflictException);
+    expect(savedEvents).toHaveLength(1);
+    expect(unlock).not.toHaveBeenCalled();
+  });
+
+  it('14. stores unrecognized requests without attendance events', async () => {
+    const request = { requestId : 'REQ-NO-EVENT', stationId : 'BD-GATE-01', qrPayload : 'NOT_A_COMPANY_QR' };
+    const first = await service.submitAccessScan(request);
+    const second = await service.submitAccessScan(request);
+    expect(first.eventId).toBeUndefined();
+    expect(second.isCachedDuplicate).toBe(true);
+    expect(second.reasonCode).toBe(first.reasonCode);
+    expect(savedEvents).toHaveLength(0);
+    expect(savedRequests.get(request.requestId)?.resultType).toBe(ScanResultType.REJECTED_NO_EVENT);
+  });
+
+  it('15. rolls back the claim when attendance insertion fails', async () => {
+    const request = {
+      requestId : 'REQ-ROLLBACK', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+    };
+    eventModel.create.mockRejectedValueOnce(new Error('DATABASE_WRITE_FAILED'));
+    await expect(service.submitAccessScan(request)).rejects.toThrow('DATABASE_WRITE_FAILED');
+    expect(savedRequests.has(request.requestId)).toBe(false);
+    const retry = await service.submitAccessScan(request);
+    expect(retry.accessDecision).toBe(AccessDecision.APPROVED);
+  });
+
+  it('16. resolves concurrent retries with one attendance event and one unlock', async () => {
+    const request = {
+      requestId : 'REQ-CONCURRENT', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+    };
+    const unlock = jest.spyOn(turnstileAdapter, 'unlockTurnstile');
+    const [first, second] = await Promise.all([service.submitAccessScan(request), service.submitAccessScan(request)]);
+    expect(first.eventId).toBe(second.eventId);
+    expect(first.isCachedDuplicate || second.isCachedDuplicate).toBe(true);
+    expect(savedEvents).toHaveLength(1);
+    expect(unlock).toHaveBeenCalledTimes(1);
+  });
+
+  it('17. recovers request identity from shared persistence after service recreation', async () => {
+    const request = {
+      requestId : 'REQ-RESTART', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+    };
+    const first = await service.submitAccessScan(request);
+    const recreated = new AttendanceEventService(
+      userQRService, gateStationService, turnstileAdapter,
+      eventModel as unknown as typeof AccessEventModel,
+      requestModel as unknown as typeof AccessScanRequestModel,
+    );
+    const unlock = jest.spyOn(turnstileAdapter, 'unlockTurnstile');
+    const second = await recreated.submitAccessScan(request);
+    expect(second.eventId).toBe(first.eventId);
+    expect(second.isCachedDuplicate).toBe(true);
+    expect(unlock).not.toHaveBeenCalled();
+  });
+
+  it('18. rejects legacy backfilled Request IDs without redispatch', async () => {
+    savedRequests.set('REQ-STAGE1', {
+      requestId : 'REQ-STAGE1', stationId : 'BD-GATE-01',
+      requestFingerprint : null, resultType : ScanResultType.LEGACY, eventId : 'EVENT-STAGE1',
+    });
+    const unlock = jest.spyOn(turnstileAdapter, 'unlockTurnstile');
+    await expect(service.submitAccessScan({
+      requestId : 'REQ-STAGE1', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+    })).rejects.toThrow(ConflictException);
+    expect(unlock).not.toHaveBeenCalled();
+  });
+
+  it('19. uses a caller-owned transaction for dynamic QR consumption', async () => {
+    const jwt = require('jsonwebtoken');
+    const transaction = { LOCK : { UPDATE : 'UPDATE' } };
+    const presentation = {
+      consumedAt : null, expiresAt : new Date(Date.now() + 60_000), save : jest.fn(async () => {}),
+    };
+    const presentationModel = { findOne : jest.fn(async () => presentation) };
+    const credentialModel = { findByPk : jest.fn(async () => ({
+      id : '10', status : 'ACTIVE', userId : '20',
+    })) };
+    const userModel = { findByPk : jest.fn(async () => ({
+      id : '20', fullName : 'Test Employee', factoryId : FactoryId.BINH_DUONG, status : 'ACTIVE',
+    })) };
+    Object.assign(userQRService, { presentationModel, credentialModel, userModel });
+    const token = jwt.sign({
+      type : 'QR_PRESENTATION', jti : 'JTI-TEST', sub : '20', credentialId : '10',
+    }, process.env.QR_JWT_SECRET || 'tmc_dynamic_qr_secret_2026', { expiresIn : 60 });
+
+    const result = await userQRService.validateCredential(token, transaction as any);
+    expect(result.isValid).toBe(true);
+    expect(presentationModel.findOne).toHaveBeenCalledWith(expect.objectContaining({ transaction }));
+    expect(presentation.save).toHaveBeenCalledWith({ transaction });
+
+    presentationModel.findOne.mockRejectedValueOnce(new Error('DATABASE_UNAVAILABLE'));
+    await expect(userQRService.validateCredential(token, transaction as any)).rejects.toThrow('DATABASE_UNAVAILABLE');
   });
 });

@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import * as crypto from 'crypto';
 import * as jwt from 'jsonwebtoken';
+import type { Transaction } from 'sequelize';
 import { FactoryId, UserModel, UserStatus } from '../users/model/user.model';
 import {
   CredentialStatus,
@@ -231,115 +232,70 @@ export class UserQRService {
     return this.publicCredential(credential);
   }
 
-  async validateAndConsume(
-    qrToken: string,
-  ): Promise<CredentialValidationResult> {
+  async validateAndConsume(qrToken : string, transaction? : Transaction) : Promise<CredentialValidationResult> {
+    let payload : jwt.JwtPayload;
     try {
-      const payload = jwt.verify(
-        qrToken,
-        process.env.QR_JWT_SECRET || 'tmc_dynamic_qr_secret_2026',
-      ) as jwt.JwtPayload;
-      if (
-        payload.type !== 'QR_PRESENTATION' ||
-        !payload.jti ||
-        !payload.sub ||
-        !payload.credentialId
-      ) {
-        return {
-          isRecognized: false,
-          isValid: false,
-          denialReason: 'INVALID_QR_TOKEN',
-        };
-      }
-      if (!this.presentationModel || !this.credentialModel || !this.userModel) {
-        return this.validateLegacyCredential(qrToken);
-      }
-      const credentialId = String(payload.credentialId);
-      const presentationUserId = String(payload.sub);
-      return UserModel.sequelize!.transaction(async (transaction) => {
-        const presentation = await this.presentationModel!.findOne({
-          where: { jti: String(payload.jti), credentialId },
-          transaction,
-          lock: transaction.LOCK.UPDATE,
-        });
-        if (
-          !presentation ||
-          presentation.consumedAt ||
-          presentation.expiresAt.getTime() <= Date.now()
-        ) {
-          return {
-            isRecognized: true,
-            isValid: false,
-            denialReason: 'QR_PRESENTATION_EXPIRED_OR_CONSUMED',
-          };
-        }
-        const credential = await this.credentialModel!.findByPk(credentialId, {
-          transaction,
-        });
-        const user = await this.userModel!.findByPk(presentationUserId, {
-          transaction,
-        });
-        if (
-          !credential ||
-          String(credential.id) !== String(payload.credentialId) ||
-          credential.status !== CredentialStatus.ACTIVE ||
-          credential.userId !== String(payload.sub)
-        ) {
-          return {
-            isRecognized: true,
-            isValid: false,
-            denialReason: 'QR_CREDENTIAL_REVOKED',
-          };
-        }
-        if (!user || user.status !== UserStatus.ACTIVE) {
-          return {
-            isRecognized: true,
-            isValid: false,
-            denialReason: 'INACTIVE_EMPLOYEE',
-          };
-        }
-        presentation.consumedAt = new Date();
-        await presentation.save({ transaction });
-        return {
-          isRecognized: true,
-          isValid: true,
-          employeeId: String(user.id),
-          employeeName: user.fullName,
-          factoryId: user.factoryId ?? undefined,
-          employeeStatus: user.status,
-          credentialId: String(credential.id),
-          credentialStatus:
-            credential.status === CredentialStatus.ACTIVE
-              ? CredentialStatus.ACTIVE
-              : credential.status === CredentialStatus.REVOKED
-                ? CredentialStatus.REVOKED
-                : undefined,
-          isDynamic: true,
-        };
-      });
-    } catch {
-      return {
-        isRecognized: false,
-        isValid: false,
-        denialReason: 'INVALID_OR_EXPIRED_QR_TOKEN',
-      };
+      payload = jwt.verify(qrToken, process.env.QR_JWT_SECRET || 'tmc_dynamic_qr_secret_2026') as jwt.JwtPayload;
+    } catch (error) {
+      if (!(error instanceof jwt.JsonWebTokenError)) throw error;
+      return { isRecognized : false, isValid : false, denialReason : 'INVALID_OR_EXPIRED_QR_TOKEN' };
     }
+
+    if (payload.type !== 'QR_PRESENTATION' || !payload.jti || !payload.sub || !payload.credentialId) {
+      return { isRecognized : false, isValid : false, denialReason : 'INVALID_QR_TOKEN' };
+    }
+    if (!this.presentationModel || !this.credentialModel || !this.userModel) {
+      return this.validateLegacyCredential(qrToken);
+    }
+
+    const credentialId       = String(payload.credentialId);
+    const presentationUserId = String(payload.sub);
+    const consume = async (activeTransaction : Transaction) : Promise<CredentialValidationResult> => {
+      const presentation = await this.presentationModel!.findOne({
+        where : { jti : String(payload.jti), credentialId },
+        transaction : activeTransaction,
+        lock : activeTransaction.LOCK.UPDATE,
+      });
+      if (!presentation || presentation.consumedAt || presentation.expiresAt.getTime() <= Date.now()) {
+        return { isRecognized : true, isValid : false, denialReason : 'QR_PRESENTATION_EXPIRED_OR_CONSUMED' };
+      }
+
+      const credential = await this.credentialModel!.findByPk(credentialId, { transaction : activeTransaction });
+      const user = await this.userModel!.findByPk(presentationUserId, { transaction : activeTransaction });
+      if (!credential || String(credential.id) !== credentialId ||
+          credential.status !== CredentialStatus.ACTIVE || credential.userId !== presentationUserId) {
+        return { isRecognized : true, isValid : false, denialReason : 'QR_CREDENTIAL_REVOKED' };
+      }
+      if (!user || user.status !== UserStatus.ACTIVE) {
+        return { isRecognized : true, isValid : false, denialReason : 'INACTIVE_EMPLOYEE' };
+      }
+
+      presentation.consumedAt = new Date();
+      await presentation.save({ transaction : activeTransaction });
+      return {
+        isRecognized     : true,
+        isValid          : true,
+        employeeId       : String(user.id),
+        employeeName     : user.fullName,
+        factoryId        : user.factoryId ?? undefined,
+        employeeStatus   : user.status,
+        credentialId     : String(credential.id),
+        credentialStatus : CredentialStatus.ACTIVE,
+        isDynamic        : true,
+      };
+    };
+
+    return transaction ? consume(transaction) : UserModel.sequelize!.transaction(consume);
   }
 
-  async validateCredential(
-    qrPayload: string,
-  ): Promise<CredentialValidationResult> {
+  async validateCredential(qrPayload : string, transaction? : Transaction) : Promise<CredentialValidationResult> {
     if (qrPayload.startsWith('TMC:QR:') || qrPayload.startsWith('TMC:DYN:')) {
-      return await Promise.resolve(this.validateLegacyCredential(qrPayload));
+      return this.validateLegacyCredential(qrPayload);
     }
     if (!qrPayload.startsWith('TMC:') && !qrPayload.includes('.')) {
-      return {
-        isRecognized: false,
-        isValid: false,
-        denialReason: 'UNRECOGNIZED_CREDENTIAL',
-      };
+      return { isRecognized : false, isValid : false, denialReason : 'UNRECOGNIZED_CREDENTIAL' };
     }
-    return this.validateAndConsume(qrPayload);
+    return this.validateAndConsume(qrPayload, transaction);
   }
 
   private validateLegacyCredential(
