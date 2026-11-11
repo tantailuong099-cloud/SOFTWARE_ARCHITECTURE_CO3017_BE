@@ -9,6 +9,7 @@ import { TURNSTILE_PORT, TurnstileCommandResult } from '../../adapters/turnstile
 import { AccessDecision, AccessEventModel, ControllerOutcome } from './model/access-event.model';
 import { FactoryId } from '../users/model/user.model';
 import { AccessScanRequestModel, ScanResultType } from './model/access-scan-request.model';
+import { OfflineSyncBatchModel } from './model/offline-sync-batch.model';
 import { GateDirection } from '../gate-station/model/gate-station.model';
 
 // Jest needs the injection token but cannot load the package's ESM entrypoint.
@@ -129,6 +130,7 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
         { provide : TURNSTILE_PORT, useValue : turnstileAdapter },
         { provide : getModelToken(AccessEventModel), useValue : eventModel },
         { provide : getModelToken(AccessScanRequestModel), useValue : requestModel },
+        { provide : getModelToken(OfflineSyncBatchModel), useValue : {} },
       ],
     }).compile();
     service = module.get<AttendanceEventService>(AttendanceEventService);
@@ -257,49 +259,14 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
     expect(replayRes.reasonCode).toBe('DYNAMIC_QR_REPLAY_ATTACK');
   });
 
-  it('10. [M2-Issue 1] should process offline synchronized scan batches idempotently (ADR-008)', async () => {
-    const deviceTimestamp = new Date().toISOString();
-    const syncResult = await service.syncOfflineScans({
-      stationId: 'BD-GATE-01',
-      syncTimestamp: new Date().toISOString(),
-      scans: [
-        {
-          requestId: 'REQ-OFFLINE-001',
-          stationId: 'BD-GATE-01',
-          qrPayload: 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
-          deviceTimestamp,
-        },
-        {
-          requestId: 'REQ-OFFLINE-002',
-          stationId: 'BD-GATE-01',
-          qrPayload: 'TMC:QR:EMP-BD-003:V1:SEC_EXPIRED_KEY_003',
-          deviceTimestamp,
-        },
-      ],
-    });
-
-    expect(syncResult.totalReceived).toBe(2);
-    expect(syncResult.processedCount).toBe(2);
-    expect(syncResult.duplicateCount).toBe(0);
-    expect(syncResult.results[0].accessDecision).toBe(AccessDecision.APPROVED);
-    expect(syncResult.results[1].accessDecision).toBe(AccessDecision.DENIED);
-
-    // Re-syncing the exact same batch must be idempotent (zero new events)
-    const reSyncResult = await service.syncOfflineScans({
-      stationId: 'BD-GATE-01',
-      syncTimestamp: new Date().toISOString(),
-      scans: [
-        {
-          requestId: 'REQ-OFFLINE-001',
-          stationId: 'BD-GATE-01',
-          qrPayload: 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
-          deviceTimestamp,
-        },
-      ],
-    });
-
-    expect(reSyncResult.duplicateCount).toBe(1);
-    expect(reSyncResult.processedCount).toBe(0);
+  it('10. rejects obsolete offline scan replay payloads without dispatching', async () => {
+    const unlock = jest.spyOn(turnstileAdapter, 'unlockTurnstile');
+    await expect(service.syncOfflineScans({
+      stationId : 'BD-GATE-01',
+      scans : [{ requestId : 'REQ-OFFLINE-001', qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001' }],
+    } as any)).rejects.toThrow('INVALID_OFFLINE_BATCH');
+    expect(unlock).not.toHaveBeenCalled();
+    expect(savedEvents).toHaveLength(0);
   });
 
   it('11. persists approved and denied events through the Sequelize model', async () => {

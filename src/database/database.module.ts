@@ -16,6 +16,7 @@ import { QRPresentationModel } from '../modules/user-qr/model/qr-presentation.mo
 import { GateStationModel } from '../modules/gate-station/model/gate-station.model';
 import { AccessEventModel } from '../modules/attendance-event/model/access-event.model';
 import { AccessScanRequestModel } from '../modules/attendance-event/model/access-scan-request.model';
+import { OfflineSyncBatchModel } from '../modules/attendance-event/model/offline-sync-batch.model';
 
 @Injectable()
 export class DatabaseConnectionChecker implements OnModuleInit {
@@ -93,6 +94,7 @@ export class DatabaseModule {
                 GateStationModel,
                 AccessEventModel,
                 AccessScanRequestModel,
+                OfflineSyncBatchModel,
               ],
               synchronize: false,
               logging: false,

@@ -113,6 +113,24 @@ export class AccessEventModel extends Model {
   })
   declare policyVersion: string;
 
+  @Column({ type : DataType.STRING(20), allowNull : false, defaultValue : 'ONLINE' })
+  declare eventSource : 'ONLINE' | 'OFFLINE_EDGE';
+
+  @Column({ type : DataType.STRING(64), allowNull : true })
+  declare offlineEventDigest : string | null;
+
+  @Column({ type : DataType.STRING, allowNull : true })
+  declare offlineBatchId : string | null;
+
+  @Column({ type : DataType.STRING, allowNull : true })
+  declare offlinePolicySnapshotId : string | null;
+
+  @Column({ type : DataType.BIGINT, allowNull : true })
+  declare offlineJournalSequence : string | null;
+
+  @Column({ type : DataType.TEXT, allowNull : true })
+  declare offlineEvidenceSignature : string | null;
+
   declare createdAt: Date;
   declare updatedAt: Date;
 }

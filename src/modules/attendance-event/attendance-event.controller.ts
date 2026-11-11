@@ -4,6 +4,7 @@ import {
   ExportHRBatchDto,
   QueryRawEventsDto,
   SubmitAccessScanDto,
+  SyncOfflineScansDto,
 } from './dto/access-event.dto';
 
 @Controller('api/access')
@@ -31,7 +32,7 @@ export class AttendanceEventController {
   }
 
   @Post('sync-offline-scans')
-  async syncOfflineScans(@Body() dto: any) {
+  async syncOfflineScans(@Body() dto: SyncOfflineScansDto) {
     return this.attendanceService.syncOfflineScans(dto);
   }
 }
