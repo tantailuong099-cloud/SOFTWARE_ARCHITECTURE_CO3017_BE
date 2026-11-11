@@ -28,9 +28,21 @@ export class TurnstileSimulatorAdapter implements ITurnstilePort {
       `[Turnstile Command] Sending UNLOCK to ${request.controllerReference} (Station: ${request.stationId}, Direction: ${request.direction}, ReqId: ${request.requestId})`,
     );
 
-    // Simulate network & mechanical communication delay
-    await new Promise((resolve) => setTimeout(resolve, this.simulatedDelayMs));
+    const timeoutMs = request.timeoutMs ?? 800;
+    const delayMs   = this.simulatedDelayMs;
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(delayMs, timeoutMs)));
     const elapsed = Date.now() - startTime;
+
+    // A timeout is uncertain: ending the wait does not cancel a physical command.
+    if (delayMs >= timeoutMs) {
+      this.logger.warn(`[Turnstile Command Timed Out] Event ${request.eventId} after ${elapsed}ms`);
+      return {
+        result             : TurnstileCommandResult.TIMEOUT_UNKNOWN,
+        message            : 'Controller acknowledgement timed out',
+        executionTimestamp : new Date(),
+        latencyMs          : elapsed,
+      };
+    }
 
     if (this.simulatedFaultMode) {
       const faultResult = this.simulatedFaultMode;

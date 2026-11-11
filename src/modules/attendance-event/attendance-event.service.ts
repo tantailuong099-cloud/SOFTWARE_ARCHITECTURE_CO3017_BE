@@ -154,29 +154,54 @@ export class AttendanceEventService {
 
     if (!result.station || !result.response.eventId) return result.response;
 
-    // Only the successful new-request owner reaches the physical-command boundary.
-    let finalControllerOutcome = ControllerOutcome.CONTROLLER_CONFIRMED;
+    // Claim the single permitted controller attempt before any external side effect.
+    const eventId = result.response.eventId;
+    const [claimed] = await this.accessEventModel.update({
+      dispatchClaimedAt : new Date(),
+      controllerOutcome : ControllerOutcome.CONTROLLER_UNKNOWN,
+    }, {
+      where : {
+        eventId,
+        accessDecision    : AccessDecision.APPROVED,
+        controllerOutcome : ControllerOutcome.CONTROLLER_PENDING,
+        dispatchClaimedAt : null,
+      },
+    });
+
+    if (claimed !== 1) {
+      const current = await this.accessEventModel.findByPk(eventId);
+      if (!current) throw new Error('Attendance event missing after dispatch claim');
+      result.response.controllerOutcome = current.controllerOutcome;
+      result.response.processingLatencyMs = Date.now() - startTime;
+      return result.response;
+    }
+
+    let finalControllerOutcome = ControllerOutcome.CONTROLLER_UNKNOWN;
     try {
       const turnstileRes = await this.turnstileAdapter.unlockTurnstile({
-        requestId : dto.requestId, eventId : result.response.eventId,
+        requestId : dto.requestId, eventId,
         controllerReference : result.station.stationCode,
         stationId : result.station.stationCode, direction : result.station.direction,
+        timeoutMs : 800,
       });
       if (turnstileRes.result === TurnstileCommandResult.UNLOCK_CONFIRMED) {
         finalControllerOutcome = ControllerOutcome.CONTROLLER_CONFIRMED;
       } else if (turnstileRes.result === TurnstileCommandResult.MECHANICAL_FAULT) {
         finalControllerOutcome = ControllerOutcome.CONTROLLER_FAILED;
-      } else {
-        finalControllerOutcome = ControllerOutcome.CONTROLLER_UNKNOWN;
       }
     } catch (error) {
-      this.logger.error(`Turnstile interaction failed: ${error instanceof Error ? error.message : String(error)}`);
-      finalControllerOutcome = ControllerOutcome.CONTROLLER_FAILED;
+      this.logger.error(`Turnstile outcome uncertain: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    await this.accessEventModel.update({ controllerOutcome : finalControllerOutcome }, {
-      where : { eventId : result.response.eventId },
-    });
+    if (finalControllerOutcome !== ControllerOutcome.CONTROLLER_UNKNOWN) {
+      const [updated] = await this.accessEventModel.update({
+        controllerOutcome : finalControllerOutcome,
+      }, {
+        where : { eventId, controllerOutcome : ControllerOutcome.CONTROLLER_UNKNOWN },
+      });
+      if (updated !== 1) throw new Error('Failed to persist definitive controller outcome');
+    }
+
     result.response.controllerOutcome = finalControllerOutcome;
     result.response.processingLatencyMs = Date.now() - startTime;
     return result.response;

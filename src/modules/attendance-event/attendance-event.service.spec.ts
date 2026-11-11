@@ -5,7 +5,7 @@ import { AttendanceEventService } from './attendance-event.service';
 import { UserQRService } from '../user-qr/user-qr.service';
 import { GateStationService } from '../gate-station/gate-station.service';
 import { TurnstileSimulatorAdapter } from '../../adapters/turnstile/turnstile-simulator.adapter';
-import { TURNSTILE_PORT } from '../../adapters/turnstile/turnstile.port';
+import { TURNSTILE_PORT, TurnstileCommandResult } from '../../adapters/turnstile/turnstile.port';
 import { AccessDecision, AccessEventModel, ControllerOutcome } from './model/access-event.model';
 import { FactoryId } from '../users/model/user.model';
 import { AccessScanRequestModel, ScanResultType } from './model/access-scan-request.model';
@@ -95,8 +95,10 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
         savedEvents.push({ ...values });
         return values;
       }),
-      update : jest.fn(async (values : Record<string, any>, options : { where : { eventId : string } }) => {
-        const event = savedEvents.find((item) => item.eventId === options.where.eventId);
+      update : jest.fn(async (values : Record<string, any>, options : { where : Record<string, any> }) => {
+        const event = savedEvents.find((item) => Object.entries(options.where).every(([key, expected]) =>
+          expected === null ? item[key] === null || item[key] === undefined : item[key] === expected,
+        ));
         if (event) Object.assign(event, values);
         return [event ? 1 : 0];
       }),
@@ -443,4 +445,124 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
     presentationModel.findOne.mockRejectedValueOnce(new Error('DATABASE_UNAVAILABLE'));
     await expect(userQRService.validateCredential(token, transaction as any)).rejects.toThrow('DATABASE_UNAVAILABLE');
   });
+
+  it('20. claims dispatch before sending the only unlock command', async () => {
+    const unlock = jest.spyOn(turnstileAdapter, 'unlockTurnstile');
+    const result = await service.submitAccessScan({
+      requestId : 'REQ-CLAIM-001', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+    });
+
+    expect(unlock).toHaveBeenCalledTimes(1);
+    expect(unlock).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs : 800 }));
+    expect(savedEvents[0].dispatchClaimedAt).toBeInstanceOf(Date);
+    expect(savedEvents[0].controllerOutcome).toBe(ControllerOutcome.CONTROLLER_CONFIRMED);
+    expect(result.controllerOutcome).toBe(ControllerOutcome.CONTROLLER_CONFIRMED);
+    expect(eventModel.update).toHaveBeenCalledTimes(2);
+  });
+
+  it('21. does not dispatch when the database claim fails', async () => {
+    eventModel.update.mockRejectedValueOnce(new Error('CLAIM_DATABASE_UNAVAILABLE'));
+    const unlock = jest.spyOn(turnstileAdapter, 'unlockTurnstile');
+
+    await expect(service.submitAccessScan({
+      requestId : 'REQ-CLAIM-FAIL', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+    })).rejects.toThrow('CLAIM_DATABASE_UNAVAILABLE');
+
+    expect(unlock).not.toHaveBeenCalled();
+    expect(savedEvents[0].controllerOutcome).toBe(ControllerOutcome.CONTROLLER_PENDING);
+  });
+
+  it('22. leaves the controller outcome unknown after an adapter exception', async () => {
+    const unlock = jest.spyOn(turnstileAdapter, 'unlockTurnstile').mockRejectedValueOnce(new Error('CONNECTION_RESET'));
+    const request = {
+      requestId : 'REQ-COMMAND-UNKNOWN', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+    };
+
+    const first = await service.submitAccessScan(request);
+    expect(first.controllerOutcome).toBe(ControllerOutcome.CONTROLLER_UNKNOWN);
+    expect(savedEvents[0].dispatchClaimedAt).toBeInstanceOf(Date);
+    expect(savedEvents[0].controllerOutcome).toBe(ControllerOutcome.CONTROLLER_UNKNOWN);
+
+    const duplicate = await service.submitAccessScan(request);
+    expect(duplicate.isCachedDuplicate).toBe(true);
+    expect(duplicate.controllerOutcome).toBe(ControllerOutcome.CONTROLLER_UNKNOWN);
+    expect(unlock).toHaveBeenCalledTimes(1);
+  });
+
+  it('23. persists a definite mechanical fault without changing the approved decision', async () => {
+    turnstileAdapter.setSimulatedFault(TurnstileCommandResult.MECHANICAL_FAULT);
+    const response = await service.submitAccessScan({
+      requestId : 'REQ-COMMAND-FAULT', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+    });
+
+    expect(response.accessDecision).toBe(AccessDecision.APPROVED);
+    expect(response.controllerOutcome).toBe(ControllerOutcome.CONTROLLER_FAILED);
+    expect(savedEvents[0].controllerOutcome).toBe(ControllerOutcome.CONTROLLER_FAILED);
+  });
+
+  it('24. keeps a timed-out command unknown', async () => {
+    turnstileAdapter.setSimulatedDelay(900);
+    const response = await service.submitAccessScan({
+      requestId : 'REQ-COMMAND-TIMEOUT', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+    });
+
+    expect(response.controllerOutcome).toBe(ControllerOutcome.CONTROLLER_UNKNOWN);
+    expect(savedEvents[0].controllerOutcome).toBe(ControllerOutcome.CONTROLLER_UNKNOWN);
+    expect(savedEvents[0].dispatchClaimedAt).toBeInstanceOf(Date);
+  });
+
+  it('25. does not claim or dispatch for denied attendance', async () => {
+    const unlock = jest.spyOn(turnstileAdapter, 'unlockTurnstile');
+    const response = await service.submitAccessScan({
+      requestId : 'REQ-COMMAND-DENIED', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-002:V1:SEC_SUSPENDED_KEY_002',
+    });
+
+    expect(response.accessDecision).toBe(AccessDecision.DENIED);
+    expect(savedEvents[0].dispatchClaimedAt).toBeUndefined();
+    expect(eventModel.update).not.toHaveBeenCalled();
+    expect(unlock).not.toHaveBeenCalled();
+  });
+
+  it('26. does not return a false confirmation if recording the outcome fails', async () => {
+    const update = eventModel.update.getMockImplementation();
+    if (!update) throw new Error('Sequelize update mock is missing');
+    eventModel.update.mockImplementationOnce(update);
+    eventModel.update.mockRejectedValueOnce(new Error('OUTCOME_DATABASE_UNAVAILABLE'));
+    const unlock = jest.spyOn(turnstileAdapter, 'unlockTurnstile');
+    const request = {
+      requestId : 'REQ-COMMAND-OUTCOME-FAIL', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+    };
+
+    await expect(service.submitAccessScan(request)).rejects.toThrow('OUTCOME_DATABASE_UNAVAILABLE');
+    expect(savedEvents[0].dispatchClaimedAt).toBeInstanceOf(Date);
+    expect(savedEvents[0].controllerOutcome).toBe(ControllerOutcome.CONTROLLER_UNKNOWN);
+
+    const duplicate = await service.submitAccessScan(request);
+    expect(duplicate.controllerOutcome).toBe(ControllerOutcome.CONTROLLER_UNKNOWN);
+    expect(unlock).toHaveBeenCalledTimes(1);
+  });
+
+  it('27. does not dispatch when another caller already owns the claim', async () => {
+    eventModel.update.mockImplementationOnce(async () => {
+      savedEvents[0].dispatchClaimedAt = new Date();
+      savedEvents[0].controllerOutcome = ControllerOutcome.CONTROLLER_UNKNOWN;
+      return [0];
+    });
+    const unlock = jest.spyOn(turnstileAdapter, 'unlockTurnstile');
+    const response = await service.submitAccessScan({
+      requestId : 'REQ-COMMAND-OWNED', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+    });
+
+    expect(response.controllerOutcome).toBe(ControllerOutcome.CONTROLLER_UNKNOWN);
+    expect(unlock).not.toHaveBeenCalled();
+  });
+
 });

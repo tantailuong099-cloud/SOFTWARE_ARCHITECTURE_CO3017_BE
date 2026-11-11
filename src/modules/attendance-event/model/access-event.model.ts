@@ -84,6 +84,10 @@ export class AccessEventModel extends Model {
   })
   declare controllerOutcome: ControllerOutcome;
 
+  // The claim is durable before a command may cross the controller boundary.
+  @Column({ type : DataType.DATE, allowNull : true })
+  declare dispatchClaimedAt : Date | null;
+
   @Column({
     type: DataType.DATE,
     allowNull: false,
