@@ -1,21 +1,73 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { getModelToken } from '@nestjs/sequelize';
 import { AttendanceEventService } from './attendance-event.service';
 import { UserQRService } from '../user-qr/user-qr.service';
 import { GateStationService } from '../gate-station/gate-station.service';
 import { TurnstileSimulatorAdapter } from '../../adapters/turnstile/turnstile-simulator.adapter';
 import { TURNSTILE_PORT } from '../../adapters/turnstile/turnstile.port';
-import { AccessDecision, ControllerOutcome } from './model/access-event.model';
+import { AccessDecision, AccessEventModel, ControllerOutcome } from './model/access-event.model';
+import { FactoryId } from '../users/model/user.model';
+import { GateDirection } from '../gate-station/model/gate-station.model';
+
+// Jest needs the injection token but cannot load the package's ESM entrypoint.
+jest.mock('@nestjs/sequelize', () => {
+  const { Inject } = jest.requireActual('@nestjs/common');
+  return {
+    InjectModel : (model : { name : string }) => Inject(`${model.name}Repository`),
+    getModelToken : (model : { name : string }) => `${model.name}Repository`,
+  };
+});
 
 describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003)', () => {
   let service: AttendanceEventService;
   let userQRService: UserQRService;
   let gateStationService: GateStationService;
   let turnstileAdapter: TurnstileSimulatorAdapter;
+  let eventModel : { create : jest.Mock; update : jest.Mock; findAll : jest.Mock };
+  let savedEvents : Array<Record<string, any>>;
+  const originalDbSetting = process.env.ENABLE_DB;
+
+  afterAll(() => {
+    if (originalDbSetting === undefined) delete process.env.ENABLE_DB;
+    else process.env.ENABLE_DB = originalDbSetting;
+  });
 
   beforeEach(async () => {
+    process.env.ENABLE_DB = 'false';
     turnstileAdapter = new TurnstileSimulatorAdapter();
     userQRService = new UserQRService();
-    gateStationService = new GateStationService();
+
+    gateStationService = {
+      validateActiveStation : jest.fn(async (stationId : string) => {
+        if (stationId === 'BD-MAINT-01') throw new ForbiddenException('STATION_INACTIVE');
+        if (stationId !== 'BD-GATE-01') throw new NotFoundException('STATION_NOT_FOUND');
+        return {
+          stationCode : stationId,
+          factoryId   : FactoryId.BINH_DUONG,
+          direction   : GateDirection.ENTRY,
+        };
+      }),
+    } as unknown as GateStationService;
+
+    savedEvents = [];
+    eventModel = {
+      create : jest.fn(async (values : Record<string, any>) => {
+        savedEvents.push({ ...values });
+        return values;
+      }),
+      update : jest.fn(async (values : Record<string, any>, options : { where : { eventId : string } }) => {
+        const event = savedEvents.find((item) => item.eventId === options.where.eventId);
+        if (event) Object.assign(event, values);
+        return [event ? 1 : 0];
+      }),
+      findAll : jest.fn(async (options? : { where? : Record<string, string>; limit? : number }) => {
+        const where = options?.where ?? {};
+        const matching = savedEvents.filter((item) => Object.entries(where).every(([key, value]) => item[key] === value));
+        matching.sort((a, b) => b.serverTimestamp.getTime() - a.serverTimestamp.getTime());
+        return matching.slice(0, options?.limit ?? matching.length);
+      }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -23,6 +75,7 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
         { provide: UserQRService, useValue: userQRService },
         { provide: GateStationService, useValue: gateStationService },
         { provide: TURNSTILE_PORT, useValue: turnstileAdapter },
+        { provide: getModelToken(AccessEventModel), useValue: eventModel },
       ],
     }).compile();
 
@@ -115,7 +168,7 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
     });
 
     expect(res.accessDecision).toBe(AccessDecision.DENIED);
-    expect(res.reasonCode).toBe('STATION_DISABLED');
+    expect(res.reasonCode).toBe('STATION_INACTIVE');
   });
 
   // --- M2 Enhancement Tests: Dynamic QR & Offline Synchronization ---
@@ -194,5 +247,40 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
 
     expect(reSyncResult.duplicateCount).toBe(1);
     expect(reSyncResult.processedCount).toBe(0);
+  });
+
+  it('11. persists approved and denied events through the Sequelize model', async () => {
+    await service.submitAccessScan({
+      requestId : 'REQ-DB-APPROVED', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+    });
+    await service.submitAccessScan({
+      requestId : 'REQ-DB-DENIED', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-002:V1:SEC_SUSPENDED_KEY_002',
+    });
+
+    expect(eventModel.create).toHaveBeenCalledTimes(2);
+    expect(savedEvents).toHaveLength(2);
+    expect(savedEvents[0].controllerOutcome).toBe(ControllerOutcome.CONTROLLER_CONFIRMED);
+    expect(savedEvents[1].accessDecision).toBe(AccessDecision.DENIED);
+
+    const recent = await service.getRecentEvents('BD-GATE-01');
+    const queried = await service.queryEvents({ stationId : 'BD-GATE-01' });
+    expect(recent).toHaveLength(2);
+    expect(queried.total).toBe(2);
+    expect(queried.approved).toBe(1);
+    expect(queried.denied).toBe(1);
+  });
+
+  it('12. does not unlock when event creation fails', async () => {
+    eventModel.create.mockRejectedValueOnce(new Error('DATABASE_WRITE_FAILED'));
+    const unlock = jest.spyOn(turnstileAdapter, 'unlockTurnstile');
+
+    await expect(service.submitAccessScan({
+      requestId : 'REQ-DB-FAILED', stationId : 'BD-GATE-01',
+      qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
+    })).rejects.toThrow('DATABASE_WRITE_FAILED');
+
+    expect(unlock).not.toHaveBeenCalled();
   });
 });

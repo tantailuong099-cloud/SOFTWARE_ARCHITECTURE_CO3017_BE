@@ -18,6 +18,7 @@ export enum ControllerOutcome {
 @Table({
   tableName: 'access_events',
   timestamps: true,
+  underscored: true,
 })
 export class AccessEventModel extends Model {
   @PrimaryKey
@@ -38,13 +39,13 @@ export class AccessEventModel extends Model {
     type: DataType.STRING,
     allowNull: true,
   })
-  declare employeeId: string;
+  declare employeeId: string | null;
 
   @Column({
     type: DataType.STRING,
     allowNull: true,
   })
-  declare employeeName: string;
+  declare employeeName: string | null;
 
   @Column({
     type: DataType.STRING,
@@ -53,19 +54,19 @@ export class AccessEventModel extends Model {
   declare stationId: string;
 
   @Column({
-    type: DataType.ENUM(...Object.values(FactoryId)),
+    type: DataType.STRING(20),
     allowNull: false,
   })
   declare factoryId: FactoryId;
 
   @Column({
-    type: DataType.ENUM(...Object.values(GateDirection)),
+    type: DataType.STRING(10),
     allowNull: false,
   })
   declare direction: GateDirection;
 
   @Column({
-    type: DataType.ENUM(...Object.values(AccessDecision)),
+    type: DataType.STRING(20),
     allowNull: false,
   })
   declare accessDecision: AccessDecision;
@@ -74,10 +75,10 @@ export class AccessEventModel extends Model {
     type: DataType.STRING,
     allowNull: true,
   })
-  declare denialReason: string;
+  declare denialReason: string | null;
 
   @Column({
-    type: DataType.ENUM(...Object.values(ControllerOutcome)),
+    type: DataType.STRING(30),
     allowNull: false,
     defaultValue: ControllerOutcome.CONTROLLER_PENDING,
   })
@@ -93,7 +94,7 @@ export class AccessEventModel extends Model {
     type: DataType.DATE,
     allowNull: true,
   })
-  declare deviceTimestamp: Date;
+  declare deviceTimestamp: Date | null;
 
   @Column({
     type: DataType.STRING,
@@ -107,4 +108,7 @@ export class AccessEventModel extends Model {
     defaultValue: 'v1.0',
   })
   declare policyVersion: string;
+
+  declare createdAt: Date;
+  declare updatedAt: Date;
 }

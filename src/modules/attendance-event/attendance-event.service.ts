@@ -7,6 +7,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import * as crypto from 'crypto';
+import { InjectModel } from '@nestjs/sequelize';
+import { AccessEventModel } from './model/access-event.model';
 import { UserQRService } from '../user-qr/user-qr.service';
 import { GateStationService } from '../gate-station/gate-station.service';
 import type { ITurnstilePort } from '../../adapters/turnstile/turnstile.port';
@@ -31,15 +33,16 @@ import type { GateStationContext } from '../gate-station/dto/gate-station.dto';
 export class AttendanceEventService {
   private readonly logger = new Logger(AttendanceEventService.name);
 
-  // In-memory durable store for access events & idempotency registry
-  private readonly eventsStore = new Map<string, any>(); // eventId -> AccessEvent
-  private readonly requestRegistry = new Map<string, any>(); // requestId -> AccessScanResponseDto
+  // Request-level idempotency becomes durable in Stage 2.
+  private readonly requestRegistry = new Map<string, AccessScanResponseDto>();
 
   constructor(
     private readonly userQRService: UserQRService,
     private readonly gateStationService: GateStationService,
     @Inject(TURNSTILE_PORT)
     private readonly turnstileAdapter: ITurnstilePort,
+    @InjectModel(AccessEventModel)
+    private readonly accessEventModel: typeof AccessEventModel,
   ) {}
 
   // --- Main Mission-Critical Gate Transaction: UC-03 & ADR-003 ---
@@ -54,8 +57,8 @@ export class AttendanceEventService {
     );
 
     // 1. Idempotency Check (NFR-DI-02 & ADR-003)
-    if (this.requestRegistry.has(dto.requestId)) {
-      const cached = this.requestRegistry.get(dto.requestId);
+    const cached = this.requestRegistry.get(dto.requestId);
+    if (cached) {
       this.logger.warn(
         `[Duplicate Request Detected] Returning established result for ReqID ${dto.requestId}`,
       );
@@ -185,7 +188,7 @@ export class AttendanceEventService {
     };
 
     // Persist approved decision before sending unlock command (NFR-DI-01, ADR-003)
-    this.eventsStore.set(eventId, accessEvent);
+    await this.accessEventModel.create(accessEvent);
 
     // 6. Send One Bounded Unlock Command to Turnstile Adapter (FR-GS-03)
     let finalControllerOutcome = ControllerOutcome.CONTROLLER_CONFIRMED;
@@ -212,9 +215,10 @@ export class AttendanceEventService {
       finalControllerOutcome = ControllerOutcome.CONTROLLER_FAILED;
     }
 
-    // 7. Append controller outcome to immutable Access Event
-    accessEvent.controllerOutcome = finalControllerOutcome;
-    this.eventsStore.set(eventId, accessEvent);
+    await this.accessEventModel.update(
+      { controllerOutcome : finalControllerOutcome },
+      { where : { eventId } },
+    );
 
     const elapsed = Date.now() - startTime;
     this.logger.log(
@@ -238,7 +242,7 @@ export class AttendanceEventService {
     return response;
   }
 
-  private persistAndReturnDenial(
+  private async persistAndReturnDenial(
     requestId: string,
     station: any,
     employeeId: string | undefined,
@@ -246,7 +250,7 @@ export class AttendanceEventService {
     denialReason: string,
     correlationId: string,
     startTime: number,
-  ): AccessScanResponseDto {
+  ): Promise<AccessScanResponseDto> {
     const eventId = crypto.randomUUID();
     const serverTimestamp = new Date();
 
@@ -266,7 +270,7 @@ export class AttendanceEventService {
       policyVersion: 'v1.0',
     };
 
-    this.eventsStore.set(eventId, denialEvent);
+    await this.accessEventModel.create(denialEvent);
 
     const elapsed = Date.now() - startTime;
     this.logger.warn(
@@ -292,71 +296,52 @@ export class AttendanceEventService {
   }
 
   // --- UC-04: View Recent Gate Events (for Guards) ---
-  async getRecentEvents(stationId: string, limit = 20) {
-    const events = Array.from(this.eventsStore.values())
-      .filter((ev) => ev.stationId === stationId)
-      .sort((a, b) => b.serverTimestamp.getTime() - a.serverTimestamp.getTime())
-      .slice(0, limit);
-    return events;
+  async getRecentEvents(stationId : string, limit = 20) {
+    return this.accessEventModel.findAll({
+      where : { stationId },
+      order : [['serverTimestamp', 'DESC']],
+      limit,
+    });
   }
 
   // --- UC-07: Query Raw Access Events ---
-  async queryEvents(dto: QueryRawEventsDto) {
-    let result = Array.from(this.eventsStore.values());
+  async queryEvents(dto : QueryRawEventsDto) {
+    const where : Record<string, string> = {};
+    if (dto.stationId) where.stationId = dto.stationId;
+    if (dto.factoryId) where.factoryId = dto.factoryId;
+    if (dto.employeeId) where.employeeId = dto.employeeId;
+    if (dto.accessDecision) where.accessDecision = dto.accessDecision;
 
-    if (dto.stationId) {
-      result = result.filter((e) => e.stationId === dto.stationId);
-    }
-    if (dto.factoryId) {
-      result = result.filter((e) => e.factoryId === dto.factoryId);
-    }
-    if (dto.employeeId) {
-      result = result.filter((e) => e.employeeId === dto.employeeId);
-    }
-    if (dto.accessDecision) {
-      result = result.filter((e) => e.accessDecision === dto.accessDecision);
-    }
-
-    result.sort(
-      (a, b) => b.serverTimestamp.getTime() - a.serverTimestamp.getTime(),
-    );
-
-    if (dto.limit) {
-      result = result.slice(0, dto.limit);
-    }
-
-    const total = result.length;
-    const approved = result.filter(
-      (e) => e.accessDecision === AccessDecision.APPROVED,
-    ).length;
-    const denied = result.filter(
-      (e) => e.accessDecision === AccessDecision.DENIED,
-    ).length;
+    const result = await this.accessEventModel.findAll({
+      where,
+      order : [['serverTimestamp', 'DESC']],
+      ...(dto.limit ? { limit : dto.limit } : {}),
+    });
 
     return {
-      total,
-      approved,
-      denied,
-      events: result,
+      total    : result.length,
+      approved : result.filter((event) => event.accessDecision === AccessDecision.APPROVED).length,
+      denied   : result.filter((event) => event.accessDecision === AccessDecision.DENIED).length,
+      events   : result,
     };
   }
 
   // --- UC-06 & ADR-004: Monthly Raw Event Export to HR/Payroll ---
   async exportHRBatch(dto: ExportHRBatchDto) {
     const batchId = `BATCH-${dto.reportingPeriod}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-    const rawEvents = Array.from(this.eventsStore.values());
+    const rawEvents = await this.accessEventModel.findAll();
 
     const batch = {
       batchId,
       reportingPeriod: dto.reportingPeriod,
       eventCount: rawEvents.length,
-      status: 'EXPORT_ACKNOWLEDGED',
+      status: 'EXPORT_SIMULATED',
       exportedAt: new Date(),
       sampleEvents: rawEvents.slice(0, 5),
     };
 
     this.logger.log(
-      `Exported HR/Payroll Batch ${batchId} with ${rawEvents.length} raw events`,
+      `Prepared simulated HR/Payroll Batch ${batchId} with ${rawEvents.length} raw events`,
     );
     return batch;
   }

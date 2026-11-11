@@ -14,6 +14,7 @@ import { UserModel } from '../modules/users/model/user.model';
 import { QRCredentialModel } from '../modules/user-qr/model/qr-credential.model';
 import { QRPresentationModel } from '../modules/user-qr/model/qr-presentation.model';
 import { GateStationModel } from '../modules/gate-station/model/gate-station.model';
+import { AccessEventModel } from '../modules/attendance-event/model/access-event.model';
 
 @Injectable()
 export class DatabaseConnectionChecker implements OnModuleInit {
@@ -89,6 +90,7 @@ export class DatabaseModule {
                 QRCredentialModel,
                 QRPresentationModel,
                 GateStationModel,
+                AccessEventModel,
               ],
               synchronize: false,
               logging: false,
