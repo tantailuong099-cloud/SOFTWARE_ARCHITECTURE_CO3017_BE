@@ -57,7 +57,7 @@ export class UserQRService {
       ['EMP-BD-002', 'Tran Thi Bich', FactoryId.BINH_DUONG],
       ['EMP-BD-003', 'Le Hoang Nam', FactoryId.BINH_DUONG],
       ['EMP-LA-001', 'Pham Minh Duc', FactoryId.LONG_AN],
-      ['EMP-LA-001', 'Pham Minh Duc', FactoryId.LONG_AN],
+      ['ADM-001', 'System Administrator', FactoryId.BINH_DUONG],
     ];
     users.forEach(([employeeId, fullName, factoryId]) =>
       this.legacyUsers.set(employeeId, {
@@ -76,6 +76,12 @@ export class UserQRService {
           'EMP-BD-001',
           CredentialStatus.ACTIVE,
           'CRED-BD-001',
+        ],
+        [
+          'TMC:QR:ADM-001:V1:SEC_VALID_KEY_ADM01',
+          'ADM-001',
+          CredentialStatus.ACTIVE,
+          'CRED-ADM-001',
         ],
         [
           'TMC:QR:EMP-BD-002:V1:SEC_SUSPENDED_KEY_002',
@@ -386,12 +392,23 @@ export class UserQRService {
     };
   }
 
-  private generateLegacyPresentation(employeeId: string) {
-    const employee =
+  private generateLegacyPresentation(employeeId: string, customUser?: UserModel | null) {
+    let employee =
       this.legacyUsers.get(employeeId) ||
       [...this.legacyUsers.values()].find(
         (user) => user.employeeId === employeeId,
       );
+
+    if (!employee && customUser) {
+      employee = {
+        employeeId: customUser.employeeCode || employeeId,
+        fullName: customUser.fullName,
+        factoryId: (customUser.factoryId as FactoryId) || FactoryId.BINH_DUONG,
+        status: customUser.status,
+      };
+      this.legacyUsers.set(employeeId, employee);
+    }
+
     if (!employee)
       throw new NotFoundException(`Employee ${employeeId} not found`);
     if (employee.status !== UserStatus.ACTIVE)
@@ -416,10 +433,33 @@ export class UserQRService {
   }
 
   async generateDynamicQR(employeeId: string) {
-    const numericUser = await this.findUserIdByEmployeeCode(employeeId);
-    return numericUser
-      ? this.generatePresentation(numericUser)
-      : this.generateLegacyPresentation(employeeId);
+    let user: UserModel | null = null;
+    if (this.userModel) {
+      user = await this.userModel.findOne({ where: { employeeCode: employeeId } });
+    }
+
+    if (user && this.credentialModel && this.presentationModel) {
+      try {
+        const presentation = await this.generatePresentation(String(user.id));
+        if ('qrToken' in presentation) {
+          return {
+            employeeId: user.employeeCode || employeeId,
+            employeeName: user.fullName,
+            factoryId: user.factoryId || FactoryId.BINH_DUONG,
+            qrPayload: presentation.qrToken,
+            generatedAt: presentation.generatedAt,
+            expiresAt: presentation.expiresAt,
+            validDurationSeconds: presentation.validForSeconds,
+          };
+        } else {
+          return presentation;
+        }
+      } catch (_) {
+        // Fallback to legacy presentation if user has no DB credential issued
+      }
+    }
+
+    return this.generateLegacyPresentation(employeeId, user);
   }
 
   private async findUserIdByEmployeeCode(employeeCode: string) {

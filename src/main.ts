@@ -15,9 +15,9 @@ async function bootstrap() {
     }),
   );
 
-  // Enable CORS for mobile & web clients
+  // Enable CORS for mobile & web clients (support credentials with dynamic origin reflection)
   app.enableCors({
-    origin: '*',
+    origin: true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
   });

@@ -6,9 +6,19 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { UserRole } from '../users/model/user.model';
 
-@Controller('api/qr')
+@Controller(['api/qr', 'api/user-qr'])
 export class UserQRController {
   constructor(private readonly userQRService: UserQRService) {}
+
+  @Get('employees/:employeeId/dynamic-qr')
+  getEmployeeDynamicQR(@Param('employeeId') employeeId: string) {
+    return this.userQRService.generateDynamicQR(employeeId);
+  }
+
+  @Post('employees/:employeeId/dynamic-qr')
+  generateEmployeeDynamicQR(@Param('employeeId') employeeId: string) {
+    return this.userQRService.generateDynamicQR(employeeId);
+  }
 
   @Get('me')
   @UseGuards(JwtAuthGuard)

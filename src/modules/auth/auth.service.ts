@@ -33,12 +33,13 @@ export class AuthService {
 
   private async findUserByEmail(email: string): Promise<UserAttributes | null> {
     try {
-      const user = await UserModel.findOne({ where: { email } });
+      const normalizedEmail = email.trim().toLowerCase();
+      const user = await UserModel.findOne({ where: { email: normalizedEmail } });
       if (user) {
-        this.logger.log(`[Database] User lookup successful for "${email}".`);
+        this.logger.log(`[Database] User lookup successful for "${normalizedEmail}".`);
         return user.get({ plain: true });
       }
-      this.logger.warn(`[Database] No user found for "${email}".`);
+      this.logger.warn(`[Database] No user found for "${normalizedEmail}".`);
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Database query failed: ${errorMsg}`);
