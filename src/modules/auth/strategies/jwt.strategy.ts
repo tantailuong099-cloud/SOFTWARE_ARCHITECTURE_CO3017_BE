@@ -1,3 +1,4 @@
+import { requireSigningKey } from '../../../config/signing-keys';
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
@@ -18,8 +19,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey:
-        process.env.JWT_SECRET || 'tmc_jwt_access_secret_token_key_2026',
+      secretOrKey: requireSigningKey('JWT_SECRET'),
     });
   }
 

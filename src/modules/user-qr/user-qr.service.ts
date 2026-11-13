@@ -52,7 +52,13 @@ export class UserQRService implements ScanCredentialValidator {
 
   async validateCredential(qrPayload: string, transaction?: Transaction) {
     if (qrPayload.startsWith('TMC:QR:') || qrPayload.startsWith('TMC:DYN:')) {
-      return this.legacy.validateCredential(qrPayload);
+      return this.database
+        ? {
+            isRecognized: false,
+            isValid: false,
+            denialReason: 'UNRECOGNIZED_CREDENTIAL',
+          }
+        : this.legacy.validateCredential(qrPayload);
     }
     if (!qrPayload.startsWith('TMC:') && !qrPayload.includes('.')) {
       return {
@@ -86,7 +92,9 @@ export class UserQRService implements ScanCredentialValidator {
     const user = await this.database?.findUserByEmployeeCode(employeeId);
     const credential = user?.id
       ? await this.getMyCredential(user.id)
-      : this.legacy.findCredential(employeeId);
+      : this.database
+        ? null
+        : this.legacy.findCredential(employeeId);
     return credential ?? { message: 'No QR credential issued' };
   }
 

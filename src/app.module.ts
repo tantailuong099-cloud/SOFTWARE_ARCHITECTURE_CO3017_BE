@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { Module } from '@nestjs/common';
+import { validateSigningKeys } from './config/signing-keys';
 import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -15,6 +16,10 @@ import { UsersModule } from './modules/users/users.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      validate: (config) => {
+        validateSigningKeys(config);
+        return config;
+      },
       envFilePath: '.env',
     }),
     DatabaseModule.forRoot(),

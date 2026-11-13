@@ -38,14 +38,23 @@ describe('AccessScanService (Mission-Critical Gate Access - UC-03 & ADR-003)', (
   let savedEvents : Array<Record<string, any>>;
   let savedRequests : Map<string, Record<string, any>>;
   const originalDbSetting = process.env.ENABLE_DB;
+  const fixtureQrKey = 'fixture-qr-key-for-attendance';
+  const originalQrKey = process.env.QR_JWT_SECRET;
+  const originalLegacyKey = process.env.LEGACY_QR_SECRET;
 
   afterAll(() => {
+    if (originalQrKey === undefined) delete process.env.QR_JWT_SECRET;
+    else process.env.QR_JWT_SECRET = originalQrKey;
+    if (originalLegacyKey === undefined) delete process.env.LEGACY_QR_SECRET;
+    else process.env.LEGACY_QR_SECRET = originalLegacyKey;
     if (originalDbSetting === undefined) delete process.env.ENABLE_DB;
     else process.env.ENABLE_DB = originalDbSetting;
   });
 
   beforeEach(async () => {
     process.env.ENABLE_DB = 'false';
+    process.env.QR_JWT_SECRET = fixtureQrKey;
+    process.env.LEGACY_QR_SECRET = 'fixture-legacy-key-for-attendance';
     turnstileAdapter = new TurnstileSimulatorAdapter();
     userQRService = new UserQRService(new LegacyQrCredentials());
 
@@ -414,7 +423,7 @@ describe('AccessScanService (Mission-Critical Gate Access - UC-03 & ADR-003)', (
     );
     const token = jwt.sign({
       type : 'QR_PRESENTATION', jti : 'JTI-TEST', sub : '20', credentialId : '10',
-    }, process.env.QR_JWT_SECRET || 'tmc_dynamic_qr_secret_2026', { expiresIn : 60 });
+    }, fixtureQrKey, { expiresIn : 60 });
 
     const result = await credentials.validateCredential(token, transaction as any);
     expect(result.isValid).toBe(true);

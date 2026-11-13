@@ -1,3 +1,4 @@
+import { requireSigningKey } from '../../config/signing-keys';
 import {
   Inject,
   Injectable,
@@ -81,13 +82,11 @@ export class AuthService {
       type: 'refresh',
     };
 
-    const accessSecret =
-      process.env.JWT_SECRET || 'tmc_jwt_access_secret_token_key_2026';
+    const accessSecret = requireSigningKey('JWT_SECRET');
     const accessExpiresIn = (process.env.JWT_EXPIRES_IN ||
       '1h') as SignOptions['expiresIn'];
 
-    const refreshSecret =
-      process.env.JWT_REFRESH_SECRET || 'tmc_jwt_refresh_secret_token_key_2026';
+    const refreshSecret = requireSigningKey('JWT_REFRESH_SECRET');
     const refreshExpiresIn = (process.env.JWT_REFRESH_EXPIRES_IN ||
       '7d') as SignOptions['expiresIn'];
 
@@ -190,8 +189,7 @@ export class AuthService {
    * Refresh Token: Rotates access and refresh tokens
    */
   async refreshTokens(dto: RefreshTokenDto) {
-    const refreshSecret =
-      process.env.JWT_REFRESH_SECRET || 'tmc_jwt_refresh_secret_token_key_2026';
+    const refreshSecret = requireSigningKey('JWT_REFRESH_SECRET');
 
     let payload: JwtPayload;
     try {

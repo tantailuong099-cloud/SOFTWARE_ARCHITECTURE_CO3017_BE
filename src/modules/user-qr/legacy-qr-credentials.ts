@@ -1,3 +1,4 @@
+import { requireSigningKey } from '../../config/signing-keys';
 import {
   BadRequestException,
   Injectable,
@@ -30,7 +31,6 @@ export class LegacyQrCredentials {
   private readonly legacyDynamicNonces = new Set<string>();
   private readonly legacyUsers = new Map<string, LegacyUser>();
   private readonly legacyCredentials = new Map<string, LegacyCredential>();
-  private readonly legacySecret = 'TMC_DYNAMIC_QR_SECRET_KEY_2026';
 
   constructor() {
     this.seedLegacyCompatibility();
@@ -152,7 +152,7 @@ export class LegacyQrCredentials {
         denialReason: 'EMPLOYEE_RECORD_MISSING',
       };
     const expected = crypto
-      .createHmac('sha256', this.legacySecret)
+      .createHmac('sha256', requireSigningKey('LEGACY_QR_SECRET'))
       .update(`${employeeId}:${timestamp}:${nonce}`)
       .digest('hex')
       .slice(0, 16);
@@ -211,7 +211,7 @@ export class LegacyQrCredentials {
     const now = Date.now();
     const nonce = crypto.randomBytes(4).toString('hex');
     const signature = crypto
-      .createHmac('sha256', this.legacySecret)
+      .createHmac('sha256', requireSigningKey('LEGACY_QR_SECRET'))
       .update(`${employeeId}:${now}:${nonce}`)
       .digest('hex')
       .slice(0, 16);

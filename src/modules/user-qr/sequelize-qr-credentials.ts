@@ -1,3 +1,4 @@
+import { requireSigningKey } from '../../config/signing-keys';
 import {
   BadRequestException,
   Injectable,
@@ -74,7 +75,7 @@ export class SequelizeQrCredentials {
         jti,
         type: 'QR_PRESENTATION',
       },
-      process.env.QR_JWT_SECRET || 'tmc_dynamic_qr_secret_2026',
+      requireSigningKey('QR_JWT_SECRET'),
       { expiresIn: ttl },
     );
     return {
@@ -138,7 +139,7 @@ export class SequelizeQrCredentials {
     try {
       payload = jwt.verify(
         qrToken,
-        process.env.QR_JWT_SECRET || 'tmc_dynamic_qr_secret_2026',
+        requireSigningKey('QR_JWT_SECRET'),
       ) as jwt.JwtPayload;
     } catch (error) {
       if (!(error instanceof jwt.JsonWebTokenError)) throw error;
@@ -199,6 +200,16 @@ export class SequelizeQrCredentials {
           isRecognized: true,
           isValid: false,
           denialReason: 'QR_CREDENTIAL_REVOKED',
+        };
+      }
+      if (
+        credential.expiresAt &&
+        credential.expiresAt.getTime() <= Date.now()
+      ) {
+        return {
+          isRecognized: true,
+          isValid: false,
+          denialReason: 'CREDENTIAL_EXPIRED',
         };
       }
       if (!user || user.status !== UserStatus.ACTIVE) {

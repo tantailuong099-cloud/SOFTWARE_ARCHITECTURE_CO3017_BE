@@ -1,3 +1,4 @@
+import { requireSigningKey } from '../../config/signing-keys';
 import { Injectable } from '@nestjs/common';
 import * as jwt from 'jsonwebtoken';
 
@@ -15,10 +16,7 @@ export class JwtService {
     payload: string | Buffer | object,
     options?: JwtSignOptions,
   ): Promise<string> {
-    const secret =
-      options?.secret ??
-      process.env.JWT_SECRET ??
-      'tmc_jwt_access_secret_token_key_2026';
+    const secret = options?.secret ?? requireSigningKey('JWT_SECRET');
     const signOpts: jwt.SignOptions = { ...(options ?? {}) };
     delete (signOpts as Record<string, unknown>).secret;
 
@@ -37,10 +35,7 @@ export class JwtService {
     token: string,
     options?: JwtVerifyOptions,
   ): Promise<T> {
-    const secret =
-      options?.secret ??
-      process.env.JWT_SECRET ??
-      'tmc_jwt_access_secret_token_key_2026';
+    const secret = options?.secret ?? requireSigningKey('JWT_SECRET');
     const verifyOpts: jwt.VerifyOptions = { ...(options ?? {}) };
     delete (verifyOpts as Record<string, unknown>).secret;
 
