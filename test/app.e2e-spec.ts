@@ -1,26 +1,38 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
-import { AppModule } from './../src/app.module';
+import { AppModule } from '../src/app.module';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication;
 
-  beforeEach(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
+  beforeAll(async () => {
+    const moduleFixture = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
 
     app = moduleFixture.createNestApplication();
+    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
     await app.init();
   });
 
-  it('/ (GET)', () => {
-    return request(app.getHttpServer())
+  afterAll(async () => {
+    await app?.close();
+  });
+
+  it('reports operational status', async () => {
+    await request(app.getHttpServer())
       .get('/')
       .expect(200)
-      .expect((res) => {
-        expect(res.body.status).toBe('OPERATIONAL');
-      });
+      .expect(({ body }) => expect(body.status).toBe('OPERATIONAL'));
+  });
+
+  it.each([
+    ['get', '/api/access/events'],
+    ['post', '/api/access/export-hr'],
+    ['get', '/api/user-qr/employees/EMP-BD-001/dynamic-qr'],
+    ['post', '/api/qr/employees/EMP-BD-001/dynamic-qr'],
+  ] as const)('requires a session for %s %s', async (method, path) => {
+    await request(app.getHttpServer())[method](path).expect(401);
   });
 });

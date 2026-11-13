@@ -1,9 +1,18 @@
-import { Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  ForbiddenException,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { UserQRService } from './user-qr.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import type { CurrentUserData } from '../auth/decorators/current-user.decorator';
 import { UserRole } from '../users/model/user.model';
 
 @Controller(['api/qr', 'api/user-qr'])
@@ -11,12 +20,22 @@ export class UserQRController {
   constructor(private readonly userQRService: UserQRService) {}
 
   @Get('employees/:employeeId/dynamic-qr')
-  getEmployeeDynamicQR(@Param('employeeId') employeeId: string) {
+  @UseGuards(JwtAuthGuard)
+  getEmployeeDynamicQR(
+    @Param('employeeId') employeeId: string,
+    @CurrentUser() actor: CurrentUserData,
+  ) {
+    this.requireIssuancePermission(employeeId, actor);
     return this.userQRService.generateDynamicQR(employeeId);
   }
 
   @Post('employees/:employeeId/dynamic-qr')
-  generateEmployeeDynamicQR(@Param('employeeId') employeeId: string) {
+  @UseGuards(JwtAuthGuard)
+  generateEmployeeDynamicQR(
+    @Param('employeeId') employeeId: string,
+    @CurrentUser() actor: CurrentUserData,
+  ) {
+    this.requireIssuancePermission(employeeId, actor);
     return this.userQRService.generateDynamicQR(employeeId);
   }
 
@@ -51,5 +70,15 @@ export class UserQRController {
   @Roles(UserRole.ADMIN)
   revokeDbCredential(@Param('id') id: string) {
     return this.userQRService.revokeCredential(id);
+  }
+  private requireIssuancePermission(
+    employeeId: string,
+    actor: CurrentUserData,
+  ) {
+    if (actor.role !== UserRole.ADMIN && actor.employeeCode !== employeeId) {
+      throw new ForbiddenException(
+        'Cannot issue a QR presentation for another employee',
+      );
+    }
   }
 }

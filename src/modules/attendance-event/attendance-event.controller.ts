@@ -1,5 +1,20 @@
 import { HrExportService } from './hr-export.service';
-import { Controller, Post, Get, Body, Query, Param } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Body,
+  Query,
+  Param,
+  UseGuards,
+  ForbiddenException,
+} from '@nestjs/common';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import type { CurrentUserData } from '../auth/decorators/current-user.decorator';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { UserRole } from '../users/model/user.model';
 import { AccessScanService } from './access-scan.service';
 import { AttendanceQueryService } from './attendance-query.service';
 import { OfflineSyncService } from './offline-sync.service';
@@ -25,8 +40,26 @@ export class AttendanceEventController {
   }
 
   @Get('events')
-  async queryEvents(@Query() dto: QueryRawEventsDto) {
-    return this.queryService.queryEvents(dto);
+  @UseGuards(JwtAuthGuard)
+  async queryEvents(
+    @Query() dto: QueryRawEventsDto,
+    @CurrentUser() actor: CurrentUserData,
+  ) {
+    if (actor.role === UserRole.ADMIN || actor.role === UserRole.HR_STAFF) {
+      return this.queryService.queryEvents(dto);
+    }
+    if (
+      !dto.employeeId ||
+      (dto.employeeId !== actor.id && dto.employeeId !== actor.employeeCode)
+    ) {
+      throw new ForbiddenException(
+        'Cannot query attendance events for another employee',
+      );
+    }
+    return this.queryService.queryEvents(dto, [
+      actor.id,
+      ...(actor.employeeCode ? [actor.employeeCode] : []),
+    ]);
   }
 
   @Get('recent-events/:stationId')
@@ -35,6 +68,8 @@ export class AttendanceEventController {
   }
 
   @Post('export-hr')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.HR_STAFF)
   async exportHRBatch(@Body() dto: ExportHRBatchDto) {
     return this.exportService.exportHRBatch(dto);
   }
