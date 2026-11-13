@@ -3,10 +3,8 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
-  Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import * as crypto from 'crypto';
 import { InjectModel } from '@nestjs/sequelize';
 import type { Transaction } from 'sequelize';
 import { AccessEventModel, AccessDecision, ControllerOutcome } from './model/access-event.model';
@@ -15,7 +13,6 @@ import { OfflineSyncBatchModel } from './model/offline-sync-batch.model';
 import { canonicalOfflineBatch, canonicalOfflineEvent, sha256Hex, verifyOfflineSignature } from './offline-evidence';
 import { GateStationService } from '../gate-station/gate-station.service';
 import {
-  ExportHRBatchDto,
   SyncOfflineResultDto,
   SyncOfflineScansDto,
   OfflineAccessEventDto,
@@ -38,9 +35,7 @@ interface OfflineStationTrust {
 }
 
 @Injectable()
-export class AttendanceEventService {
-  private readonly logger = new Logger(AttendanceEventService.name);
-
+export class OfflineSyncService {
   constructor(
     private readonly gateStationService : GateStationService,
     @InjectModel(AccessEventModel)
@@ -50,26 +45,6 @@ export class AttendanceEventService {
     @InjectModel(OfflineSyncBatchModel)
     private readonly offlineBatchModel : typeof OfflineSyncBatchModel,
   ) {}
-
-  // --- UC-06 & ADR-004: Monthly Raw Event Export to HR/Payroll ---
-  async exportHRBatch(dto: ExportHRBatchDto) {
-    const batchId = `BATCH-${dto.reportingPeriod}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-    const rawEvents = await this.accessEventModel.findAll();
-
-    const batch = {
-      batchId,
-      reportingPeriod: dto.reportingPeriod,
-      eventCount: rawEvents.length,
-      status: 'EXPORT_SIMULATED',
-      exportedAt: new Date(),
-      sampleEvents: rawEvents.slice(0, 5),
-    };
-
-    this.logger.log(
-      `Prepared simulated HR/Payroll Batch ${batchId} with ${rawEvents.length} raw events`,
-    );
-    return batch;
-  }
 
   // Historical import only. Never call live QR validation or controller dispatch from this path.
   async syncOfflineScans(dto : SyncOfflineScansDto) : Promise<SyncOfflineResultDto> {

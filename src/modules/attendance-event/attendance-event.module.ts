@@ -1,3 +1,4 @@
+import { HrExportService } from './hr-export.service';
 import { Module } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
 import { AccessEventModel } from './model/access-event.model';
@@ -6,7 +7,7 @@ import { OfflineSyncBatchModel } from './model/offline-sync-batch.model';
 import { AttendanceEventController } from './attendance-event.controller';
 import { AccessScanService } from './access-scan.service';
 import { AttendanceQueryService } from './attendance-query.service';
-import { AttendanceEventService } from './attendance-event.service';
+import { OfflineSyncService } from './offline-sync.service';
 import { UserQRModule } from '../user-qr/user-qr.module';
 import { GateStationModule } from '../gate-station/gate-station.module';
 import { TurnstileModule } from '../../adapters/turnstile/turnstile.module';
@@ -14,7 +15,6 @@ import { TurnstileModule } from '../../adapters/turnstile/turnstile.module';
 @Module({
   imports: [UserQRModule, GateStationModule, TurnstileModule, SequelizeModule.forFeature([AccessEventModel, AccessScanRequestModel, OfflineSyncBatchModel])],
   controllers: [AttendanceEventController],
-  providers: [AccessScanService, AttendanceQueryService, AttendanceEventService],
-  exports: [AttendanceEventService],
+  providers: [AccessScanService, AttendanceQueryService, OfflineSyncService, HrExportService],
 })
 export class AttendanceEventModule {}

@@ -3,7 +3,7 @@ import { ConflictException, ForbiddenException, NotFoundException } from '@nestj
 import { getModelToken } from '@nestjs/sequelize';
 import { AccessScanService } from './access-scan.service';
 import { AttendanceQueryService } from './attendance-query.service';
-import { AttendanceEventService } from './attendance-event.service';
+import { OfflineSyncService } from './offline-sync.service';
 import { UserQRService } from '../user-qr/user-qr.service';
 import { GateStationService } from '../gate-station/gate-station.service';
 import { TurnstileSimulatorAdapter } from '../../adapters/turnstile/turnstile-simulator.adapter';
@@ -26,7 +26,7 @@ jest.mock('@nestjs/sequelize', () => {
 describe('AccessScanService (Mission-Critical Gate Access - UC-03 & ADR-003)', () => {
   let service : AccessScanService;
   let queryService : AttendanceQueryService;
-  let offlineService : AttendanceEventService;
+  let offlineService : OfflineSyncService;
   let userQRService : UserQRService;
   let gateStationService : GateStationService;
   let turnstileAdapter : TurnstileSimulatorAdapter;
@@ -128,7 +128,7 @@ describe('AccessScanService (Mission-Critical Gate Access - UC-03 & ADR-003)', (
 
     const module : TestingModule = await Test.createTestingModule({
       providers : [
-        AccessScanService, AttendanceQueryService, AttendanceEventService,
+        AccessScanService, AttendanceQueryService, OfflineSyncService,
         { provide : UserQRService, useValue : userQRService },
         { provide : GateStationService, useValue : gateStationService },
         { provide : TURNSTILE_PORT, useValue : turnstileAdapter },
@@ -139,7 +139,7 @@ describe('AccessScanService (Mission-Critical Gate Access - UC-03 & ADR-003)', (
     }).compile();
     service = module.get(AccessScanService);
     queryService = module.get(AttendanceQueryService);
-    offlineService = module.get(AttendanceEventService);
+    offlineService = module.get(OfflineSyncService);
   });
 
   it('1. should APPROVE valid QR credential and confirm turnstile unlock (Binh Duong employee at Binh Duong gate)', async () => {

@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 import { BadRequestException, ConflictException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
-import { AttendanceEventService } from './attendance-event.service';
+import { OfflineSyncService } from './offline-sync.service';
 import { AccessDecision, ControllerOutcome } from './model/access-event.model';
 import { canonicalOfflineBatch, canonicalOfflineEvent, sha256Hex } from './offline-evidence';
 import type { OfflineAccessEventDto, SyncOfflineScansDto } from './dto/access-event.dto';
@@ -16,9 +16,7 @@ describe('Offline historical batch import', () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
   const publicKeyPem = publicKey.export({ type : 'spki', format : 'pem' }).toString();
   const originalTrust = process.env.OFFLINE_SYNC_TRUST_JSON;
-  let service : AttendanceEventService;
-  let unlock : jest.Mock;
-  let validateQR : jest.Mock;
+  let service : OfflineSyncService;
   let records : Map<string, any>;
   let claims : Map<string, any>;
   let batches : Map<string, any>;
@@ -67,8 +65,6 @@ describe('Offline historical batch import', () => {
     records = new Map();
     claims = new Map();
     batches = new Map();
-    unlock = jest.fn();
-    validateQR = jest.fn();
     let previous = Promise.resolve();
     db = {
       transaction : jest.fn(async (callback : (tx : any) => Promise<unknown>) => {
@@ -137,7 +133,7 @@ describe('Offline historical batch import', () => {
       }),
     };
     const station : any = { stationCode : 'BD-GATE-01', factoryId : FactoryId.BINH_DUONG, direction : GateDirection.ENTRY };
-    service = new AttendanceEventService(
+    service = new OfflineSyncService(
       { validateActiveStation : jest.fn(async () => station) } as any,
       eventModel, requestModel, batchModel,
     );
@@ -155,8 +151,6 @@ describe('Offline historical batch import', () => {
     expect(response.status).toBe('COMPLETE');
     expect(records.get(offlineEvent.eventId)?.dispatchClaimedAt).toBeNull();
     expect(claims.get(offlineEvent.requestId)?.eventId).toBe(offlineEvent.eventId);
-    expect(unlock).not.toHaveBeenCalled();
-    expect(validateQR).not.toHaveBeenCalled();
   });
 
   it('returns stable acknowledgements for an identical batch retry', async () => {
@@ -165,7 +159,6 @@ describe('Offline historical batch import', () => {
     const second = await service.syncOfflineScans(original);
     expect(second).toEqual(first);
     expect(records.size).toBe(1);
-    expect(unlock).not.toHaveBeenCalled();
   });
 
   it('rejects a reused batch ID with different signed content', async () => {
@@ -262,7 +255,6 @@ describe('Offline historical batch import', () => {
     const response = await service.syncOfflineScans(batch([denied]));
     expect(response.acceptedCount).toBe(1);
     expect(records.get(denied.eventId)?.controllerOutcome).toBe(ControllerOutcome.NOT_APPLICABLE);
-    expect(unlock).not.toHaveBeenCalled();
   });
 
   it('flags an Event ID reused with different signed evidence', async () => {
@@ -281,7 +273,6 @@ describe('Offline historical batch import', () => {
     const response = await service.syncOfflineScans(batch([uncertain]));
     expect(response.acceptedCount).toBe(1);
     expect(records.get(uncertain.eventId)?.controllerOutcome).toBe(ControllerOutcome.CONTROLLER_UNKNOWN);
-    expect(unlock).not.toHaveBeenCalled();
   });
 
   it('serializes concurrent submissions of an identical batch', async () => {
@@ -291,6 +282,5 @@ describe('Offline historical batch import', () => {
     ]);
     expect(responses[0]).toEqual(responses[1]);
     expect(records.size).toBe(1);
-    expect(unlock).not.toHaveBeenCalled();
   });
 });
