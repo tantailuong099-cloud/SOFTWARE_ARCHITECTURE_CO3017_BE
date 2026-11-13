@@ -56,17 +56,40 @@ export class AccessScanResponseDto {
 }
 
 export class QueryRawEventsDto {
+  @IsOptional()
+  @IsString()
   stationId?: string;
+
+  @IsOptional()
+  @IsEnum(FactoryId)
   factoryId?: FactoryId;
+
+  @IsOptional()
+  @IsString()
   employeeId?: string;
+
+  @IsOptional()
+  @IsEnum(AccessDecision)
   accessDecision?: AccessDecision;
+
+  @IsOptional()
+  @IsDateString()
   startDate?: string;
+
+  @IsOptional()
+  @IsDateString()
   endDate?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
   limit?: number;
 }
 
 export class ExportHRBatchDto {
-  reportingPeriod: string; // e.g. "2026-10"
+  @Matches(/^\d{4}-(0[1-9]|1[0-2])$/)
+  reportingPeriod: string;
 }
 
 export class OfflineAccessEventDto {
