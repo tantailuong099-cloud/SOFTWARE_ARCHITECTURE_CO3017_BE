@@ -37,7 +37,7 @@ describe('Offline historical batch import', () => {
     candidate.evidenceSignature = sign(canonicalOfflineEvent(candidate));
     return candidate;
   };
-  const batch = (events : OfflineAccessEventDto[], batchId = crypto.randomUUID()) : SyncOfflineScansDto => {
+  const batch = (events : OfflineAccessEventDto[], batchId : string = crypto.randomUUID()) : SyncOfflineScansDto => {
     const candidate : SyncOfflineScansDto = {
       schemaVersion : 1, batchId, stationId : 'BD-GATE-01', eventCount : events.length,
       events, payloadDigest : '', batchSignature : '',

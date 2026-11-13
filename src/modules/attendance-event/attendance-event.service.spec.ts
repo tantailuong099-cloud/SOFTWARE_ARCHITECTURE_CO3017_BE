@@ -12,7 +12,7 @@ import { GateStationService } from '../gate-station/gate-station.service';
 import { TurnstileSimulatorAdapter } from '../../adapters/turnstile/turnstile-simulator.adapter';
 import { TURNSTILE_PORT, TurnstileCommandResult } from '../../adapters/turnstile/turnstile.port';
 import { AccessDecision, AccessEventModel, ControllerOutcome } from './model/access-event.model';
-import { FactoryId } from '../users/model/user.model';
+import { FactoryId, UserStatus } from '../users/model/user.model';
 import { AccessScanRequestModel, ScanResultType } from './model/access-scan-request.model';
 import { OfflineSyncBatchModel } from './model/offline-sync-batch.model';
 import { GateDirection } from '../gate-station/model/gate-station.model';
@@ -152,6 +152,50 @@ describe('AccessScanService (Mission-Critical Gate Access - UC-03 & ADR-003)', (
     service = module.get(AccessScanService);
     queryService = module.get(AttendanceQueryService);
     offlineService = module.get(OfflineSyncService);
+  });
+
+  it('uses substitute credential and turnstile ports with request correlation', async () => {
+    const credentialValidator = {
+      validateCredential: jest.fn(async () => ({
+        isRecognized: true,
+        isValid: true,
+        employeeId: 'EMP-PORT',
+        employeeName: 'Test Employee',
+        employeeStatus: UserStatus.ACTIVE,
+        factoryId: FactoryId.BINH_DUONG,
+      })),
+    };
+    const turnstile = {
+      unlockTurnstile: jest.fn(async () => ({
+        result: TurnstileCommandResult.TIMEOUT_UNKNOWN,
+        executionTimestamp: new Date(),
+        latencyMs: 800,
+      })),
+    };
+    const module = await Test.createTestingModule({
+      providers: [
+        AccessScanService,
+        { provide: SCAN_CREDENTIAL_VALIDATOR, useValue: credentialValidator },
+        { provide: TURNSTILE_PORT, useValue: turnstile },
+        { provide: GateStationService, useValue: gateStationService },
+        { provide: getModelToken(AccessEventModel), useValue: eventModel },
+        { provide: getModelToken(AccessScanRequestModel), useValue: requestModel },
+      ],
+    }).compile();
+    const scan = module.get(AccessScanService);
+    const request = { requestId: 'REQ-PORT', stationId: 'BD-GATE-01', qrPayload: 'fixture' };
+    const first = await scan.submitAccessScan(request);
+    const duplicate = await scan.submitAccessScan(request);
+    expect(first.controllerOutcome).toBe(ControllerOutcome.CONTROLLER_UNKNOWN);
+    expect(duplicate).toMatchObject({ eventId: first.eventId, isCachedDuplicate: true });
+    expect(credentialValidator.validateCredential).toHaveBeenCalledTimes(1);
+    expect(turnstile.unlockTurnstile).toHaveBeenCalledTimes(1);
+    expect(turnstile.unlockTurnstile).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: request.requestId,
+      eventId: first.eventId,
+      stationId: request.stationId,
+    }));
+    await module.close();
   });
 
   it('1. should APPROVE valid QR credential and confirm turnstile unlock (Binh Duong employee at Binh Duong gate)', async () => {
