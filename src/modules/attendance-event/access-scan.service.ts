@@ -12,7 +12,8 @@ import { InjectModel } from '@nestjs/sequelize';
 import type { Transaction } from 'sequelize';
 import { AccessEventModel, AccessDecision, ControllerOutcome } from './model/access-event.model';
 import { AccessScanRequestModel, ScanResultType } from './model/access-scan-request.model';
-import { UserQRService } from '../user-qr/user-qr.service';
+import { SCAN_CREDENTIAL_VALIDATOR } from '../user-qr/scan-credential.port';
+import type { ScanCredentialValidator } from '../user-qr/scan-credential.port';
 import { GateStationService } from '../gate-station/gate-station.service';
 import type { ITurnstilePort } from '../../adapters/turnstile/turnstile.port';
 import { TURNSTILE_PORT, TurnstileCommandResult } from '../../adapters/turnstile/turnstile.port';
@@ -25,7 +26,8 @@ export class AccessScanService {
   private readonly logger = new Logger(AccessScanService.name);
 
   constructor(
-    private readonly userQRService : UserQRService,
+    @Inject(SCAN_CREDENTIAL_VALIDATOR)
+    private readonly credentialValidator : ScanCredentialValidator,
     private readonly gateStationService : GateStationService,
     @Inject(TURNSTILE_PORT)
     private readonly turnstileAdapter : ITurnstilePort,
@@ -83,7 +85,7 @@ export class AccessScanService {
         return { response, station : null };
       }
 
-      const credential = await this.userQRService.validateCredential(dto.qrPayload, transaction);
+      const credential = await this.credentialValidator.validateCredential(dto.qrPayload, transaction);
       if (!credential.isRecognized) {
         const reasonCode = credential.denialReason ?? 'UNRECOGNIZED_CREDENTIAL';
         const serverTimestamp = new Date();

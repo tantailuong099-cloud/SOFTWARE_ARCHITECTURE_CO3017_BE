@@ -4,6 +4,9 @@ import { getModelToken } from '@nestjs/sequelize';
 import { AccessScanService } from './access-scan.service';
 import { AttendanceQueryService } from './attendance-query.service';
 import { OfflineSyncService } from './offline-sync.service';
+import { SCAN_CREDENTIAL_VALIDATOR } from '../user-qr/scan-credential.port';
+import { LegacyQrCredentials } from '../user-qr/legacy-qr-credentials';
+import { SequelizeQrCredentials } from '../user-qr/sequelize-qr-credentials';
 import { UserQRService } from '../user-qr/user-qr.service';
 import { GateStationService } from '../gate-station/gate-station.service';
 import { TurnstileSimulatorAdapter } from '../../adapters/turnstile/turnstile-simulator.adapter';
@@ -44,7 +47,7 @@ describe('AccessScanService (Mission-Critical Gate Access - UC-03 & ADR-003)', (
   beforeEach(async () => {
     process.env.ENABLE_DB = 'false';
     turnstileAdapter = new TurnstileSimulatorAdapter();
-    userQRService = new UserQRService();
+    userQRService = new UserQRService(new LegacyQrCredentials());
 
     gateStationService = {
       validateActiveStation : jest.fn(async (stationId : string) => {
@@ -129,7 +132,7 @@ describe('AccessScanService (Mission-Critical Gate Access - UC-03 & ADR-003)', (
     const module : TestingModule = await Test.createTestingModule({
       providers : [
         AccessScanService, AttendanceQueryService, OfflineSyncService,
-        { provide : UserQRService, useValue : userQRService },
+        { provide : SCAN_CREDENTIAL_VALIDATOR, useValue : userQRService },
         { provide : GateStationService, useValue : gateStationService },
         { provide : TURNSTILE_PORT, useValue : turnstileAdapter },
         { provide : getModelToken(AccessEventModel), useValue : eventModel },
@@ -405,18 +408,21 @@ describe('AccessScanService (Mission-Critical Gate Access - UC-03 & ADR-003)', (
     const userModel = { findByPk : jest.fn(async () => ({
       id : '20', fullName : 'Test Employee', factoryId : FactoryId.BINH_DUONG, status : 'ACTIVE',
     })) };
-    Object.assign(userQRService, { presentationModel, credentialModel, userModel });
+    const credentials = new UserQRService(
+      new LegacyQrCredentials(),
+      new SequelizeQrCredentials(userModel as any, credentialModel as any, presentationModel as any),
+    );
     const token = jwt.sign({
       type : 'QR_PRESENTATION', jti : 'JTI-TEST', sub : '20', credentialId : '10',
     }, process.env.QR_JWT_SECRET || 'tmc_dynamic_qr_secret_2026', { expiresIn : 60 });
 
-    const result = await userQRService.validateCredential(token, transaction as any);
+    const result = await credentials.validateCredential(token, transaction as any);
     expect(result.isValid).toBe(true);
     expect(presentationModel.findOne).toHaveBeenCalledWith(expect.objectContaining({ transaction }));
     expect(presentation.save).toHaveBeenCalledWith({ transaction });
 
     presentationModel.findOne.mockRejectedValueOnce(new Error('DATABASE_UNAVAILABLE'));
-    await expect(userQRService.validateCredential(token, transaction as any)).rejects.toThrow('DATABASE_UNAVAILABLE');
+    await expect(credentials.validateCredential(token, transaction as any)).rejects.toThrow('DATABASE_UNAVAILABLE');
   });
 
   it('20. claims dispatch before sending the only unlock command', async () => {

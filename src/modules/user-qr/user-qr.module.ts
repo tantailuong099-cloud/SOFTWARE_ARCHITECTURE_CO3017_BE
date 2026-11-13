@@ -1,6 +1,9 @@
 import 'dotenv/config';
 import { Module } from '@nestjs/common';
 import { UserQRController } from './user-qr.controller';
+import { LegacyQrCredentials } from './legacy-qr-credentials';
+import { SequelizeQrCredentials } from './sequelize-qr-credentials';
+import { SCAN_CREDENTIAL_VALIDATOR } from './scan-credential.port';
 import { UserQRService } from './user-qr.service';
 import { SequelizeModule } from '@nestjs/sequelize';
 import { UserModel } from '../users/model/user.model';
@@ -15,16 +18,21 @@ const isDbEnabled = process.env.ENABLE_DB === 'true';
     AuthModule,
     ...(isDbEnabled
       ? [
-        SequelizeModule.forFeature([
-          UserModel,
-          QRCredentialModel,
-          QRPresentationModel,
-        ]),
-      ]
+          SequelizeModule.forFeature([
+            UserModel,
+            QRCredentialModel,
+            QRPresentationModel,
+          ]),
+        ]
       : []),
   ],
   controllers: [UserQRController],
-  providers: [UserQRService],
-  exports: [UserQRService],
+  providers: [
+    UserQRService,
+    LegacyQrCredentials,
+    ...(isDbEnabled ? [SequelizeQrCredentials] : []),
+    { provide: SCAN_CREDENTIAL_VALIDATOR, useExisting: UserQRService },
+  ],
+  exports: [SCAN_CREDENTIAL_VALIDATOR],
 })
 export class UserQRModule {}
