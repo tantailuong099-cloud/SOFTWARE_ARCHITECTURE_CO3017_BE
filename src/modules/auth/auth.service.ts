@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   UnauthorizedException,
   Logger,
@@ -7,22 +8,31 @@ import {
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { SignOptions } from 'jsonwebtoken';
+import { UserStatus } from '../users/model/user.model';
 import {
-  UserAttributes,
-  UserModel,
-  UserStatus,
-} from '../users/model/user.model';
+  TOKEN_SESSION_STORE,
+  USER_IDENTITY_READER,
+} from './auth-persistence.port';
+import type {
+  IssuedSession,
+  TokenSessionStore,
+  UserIdentityReader,
+} from './auth-persistence.port';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { JwtPayload } from './strategies/jwt.strategy';
 import { JwtService } from './jwt.service';
-import { TokenModel, TokenType } from './model/token.model';
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
 
-  constructor(private readonly jwtService: JwtService) {}
+  constructor(
+    private readonly jwtService: JwtService,
+    @Inject(USER_IDENTITY_READER)
+    private readonly identities: UserIdentityReader,
+    @Inject(TOKEN_SESSION_STORE) private readonly sessions: TokenSessionStore,
+  ) {}
 
   private requireUserId(id: string | undefined): string {
     if (!id) {
@@ -31,66 +41,21 @@ export class AuthService {
     return id;
   }
 
-  private async findUserByEmail(email: string): Promise<UserAttributes | null> {
-    try {
-      const normalizedEmail = email.trim().toLowerCase();
-      const user = await UserModel.findOne({ where: { email: normalizedEmail } });
-      if (user) {
-        this.logger.log(`[Database] User lookup successful for "${normalizedEmail}".`);
-        return user.get({ plain: true });
-      }
-      this.logger.warn(`[Database] No user found for "${normalizedEmail}".`);
-    } catch (err: unknown) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`Database query failed: ${errorMsg}`);
-    }
-    return null;
-  }
-
-  private async findUserById(id: string): Promise<UserAttributes | null> {
-    try {
-      const user = await UserModel.findByPk(id);
-      if (user) return user.get({ plain: true });
-    } catch (err: unknown) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`Database query failed: ${errorMsg}`);
-    }
-    return null;
-  }
-
   private tokenHash(token: string): string {
     return crypto.createHash('sha256').update(token).digest('hex');
   }
 
-  private async revokeUserTokens(userId: string, type?: TokenType) {
-    await TokenModel.update(
-      { revoked: true },
-      { where: { userId, ...(type ? { type } : {}) } },
-    );
-  }
-
-  private async storeTokens(
-    userId: string,
+  private describeSession(
     accessToken: string,
     refreshToken: string,
-  ): Promise<void> {
+  ): IssuedSession {
     const now = Date.now();
-    await TokenModel.bulkCreate([
-      {
-        userId,
-        tokenHash: this.tokenHash(accessToken),
-        type: TokenType.ACCESS,
-        revoked: false,
-        expiresAt: new Date(now + 60 * 60 * 1000),
-      },
-      {
-        userId,
-        tokenHash: this.tokenHash(refreshToken),
-        type: TokenType.REFRESH,
-        revoked: false,
-        expiresAt: new Date(now + 7 * 24 * 60 * 60 * 1000),
-      },
-    ]);
+    return {
+      accessHash: this.tokenHash(accessToken),
+      refreshHash: this.tokenHash(refreshToken),
+      accessExpiresAt: new Date(now + 60 * 60 * 1000),
+      refreshExpiresAt: new Date(now + 7 * 24 * 60 * 60 * 1000),
+    };
   }
 
   /**
@@ -147,7 +112,9 @@ export class AuthService {
    * User Login: Validates credentials and returns tokens
    */
   async login(loginDto: LoginDto) {
-    const user = await this.findUserByEmail(loginDto.email);
+    const user = await this.identities.findByEmail(
+      loginDto.email.trim().toLowerCase(),
+    );
 
     if (!user) {
       this.logger.warn(
@@ -193,8 +160,10 @@ export class AuthService {
     const tokens = await this.generateTokens({ ...user, id: userId });
 
     // Hash refresh token and persist
-    await this.revokeUserTokens(userId);
-    await this.storeTokens(userId, tokens.accessToken, tokens.refreshToken);
+    await this.sessions.replaceForUser(
+      userId,
+      this.describeSession(tokens.accessToken, tokens.refreshToken),
+    );
     this.logger.log(
       `[Database] Authentication tokens stored for user "${user.email}".`,
     );
@@ -236,7 +205,7 @@ export class AuthService {
       );
     }
 
-    const user = await this.findUserById(payload.sub);
+    const user = await this.identities.findById(payload.sub);
     if (!user) {
       throw new UnauthorizedException('Không tìm thấy tài khoản người dùng');
     }
@@ -245,25 +214,18 @@ export class AuthService {
       throw new UnauthorizedException('Tài khoản đã bị tạm khóa');
     }
 
-    const refreshToken = await TokenModel.findOne({
-      where: {
-        userId: user.id,
-        tokenHash: this.tokenHash(dto.refreshToken),
-        type: TokenType.REFRESH,
-        revoked: false,
-      },
-    });
-    if (!refreshToken || refreshToken.expiresAt.getTime() <= Date.now()) {
+    const userId = this.requireUserId(user.id);
+    const tokens = await this.generateTokens({ ...user, id: userId });
+    const rotated = await this.sessions.rotateRefresh(
+      userId,
+      this.tokenHash(dto.refreshToken),
+      this.describeSession(tokens.accessToken, tokens.refreshToken),
+    );
+    if (!rotated) {
       throw new UnauthorizedException(
         'Refresh token đã bị thu hồi hoặc đã đăng xuất',
       );
     }
-
-    // Token is valid: Rotate tokens
-    const userId = this.requireUserId(user.id);
-    const tokens = await this.generateTokens({ ...user, id: userId });
-    await refreshToken.update({ revoked: true });
-    await this.storeTokens(userId, tokens.accessToken, tokens.refreshToken);
 
     this.logger.log(
       `[Token Rotated] Refreshed tokens for user "${user.email}"`,
@@ -279,7 +241,7 @@ export class AuthService {
    * Logout: Clears refresh token in database
    */
   async logout(userId: string) {
-    await this.revokeUserTokens(userId);
+    await this.sessions.revokeForUser(userId);
     this.logger.log(`[Logout] User ${userId} logged out successfully.`);
     return {
       success: true,
@@ -291,7 +253,7 @@ export class AuthService {
    * Get current authenticated user profile
    */
   async getProfile(userId: string) {
-    const user = await this.findUserById(userId);
+    const user = await this.identities.findById(userId);
     if (!user) {
       throw new NotFoundException('Không tìm thấy thông tin người dùng');
     }

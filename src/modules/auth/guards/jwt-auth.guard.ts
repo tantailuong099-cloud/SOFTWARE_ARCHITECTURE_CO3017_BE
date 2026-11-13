@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   CanActivate,
   ExecutionContext,
@@ -7,7 +8,8 @@ import {
 import { Request } from 'express';
 import { JwtService } from '../jwt.service';
 import { JwtPayload } from '../strategies/jwt.strategy';
-import { TokenModel, TokenType } from '../model/token.model';
+import { ACCESS_SESSION_READER } from '../auth-persistence.port';
+import type { AccessSessionReader } from '../auth-persistence.port';
 import * as crypto from 'crypto';
 
 interface RequestWithUser extends Request {
@@ -21,7 +23,11 @@ interface RequestWithUser extends Request {
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
-  constructor(private readonly jwtService: JwtService) {}
+  constructor(
+    private readonly jwtService: JwtService,
+    @Inject(ACCESS_SESSION_READER)
+    private readonly sessions: AccessSessionReader,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<RequestWithUser>();
@@ -45,15 +51,7 @@ export class JwtAuthGuard implements CanActivate {
     try {
       const payload = await this.jwtService.verifyAsync<JwtPayload>(token);
       const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-      const storedToken = await TokenModel.findOne({
-        where: {
-          userId: payload.sub,
-          tokenHash,
-          type: TokenType.ACCESS,
-          revoked: false,
-        },
-      });
-      if (!storedToken || storedToken.expiresAt.getTime() <= Date.now()) {
+      if (!(await this.sessions.hasActiveAccess(payload.sub, tokenHash))) {
         throw new UnauthorizedException('Phiên đăng nhập đã bị thu hồi');
       }
       request.user = {
