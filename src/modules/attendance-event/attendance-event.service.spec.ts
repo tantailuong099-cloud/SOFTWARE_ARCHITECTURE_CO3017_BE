@@ -1,6 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { getModelToken } from '@nestjs/sequelize';
+import { AccessScanService } from './access-scan.service';
+import { AttendanceQueryService } from './attendance-query.service';
 import { AttendanceEventService } from './attendance-event.service';
 import { UserQRService } from '../user-qr/user-qr.service';
 import { GateStationService } from '../gate-station/gate-station.service';
@@ -21,8 +23,10 @@ jest.mock('@nestjs/sequelize', () => {
   };
 });
 
-describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003)', () => {
-  let service : AttendanceEventService;
+describe('AccessScanService (Mission-Critical Gate Access - UC-03 & ADR-003)', () => {
+  let service : AccessScanService;
+  let queryService : AttendanceQueryService;
+  let offlineService : AttendanceEventService;
   let userQRService : UserQRService;
   let gateStationService : GateStationService;
   let turnstileAdapter : TurnstileSimulatorAdapter;
@@ -124,7 +128,7 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
 
     const module : TestingModule = await Test.createTestingModule({
       providers : [
-        AttendanceEventService,
+        AccessScanService, AttendanceQueryService, AttendanceEventService,
         { provide : UserQRService, useValue : userQRService },
         { provide : GateStationService, useValue : gateStationService },
         { provide : TURNSTILE_PORT, useValue : turnstileAdapter },
@@ -133,7 +137,9 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
         { provide : getModelToken(OfflineSyncBatchModel), useValue : {} },
       ],
     }).compile();
-    service = module.get<AttendanceEventService>(AttendanceEventService);
+    service = module.get(AccessScanService);
+    queryService = module.get(AttendanceQueryService);
+    offlineService = module.get(AttendanceEventService);
   });
 
   it('1. should APPROVE valid QR credential and confirm turnstile unlock (Binh Duong employee at Binh Duong gate)', async () => {
@@ -261,7 +267,7 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
 
   it('10. rejects obsolete offline scan replay payloads without dispatching', async () => {
     const unlock = jest.spyOn(turnstileAdapter, 'unlockTurnstile');
-    await expect(service.syncOfflineScans({
+    await expect(offlineService.syncOfflineScans({
       stationId : 'BD-GATE-01',
       scans : [{ requestId : 'REQ-OFFLINE-001', qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001' }],
     } as any)).rejects.toThrow('INVALID_OFFLINE_BATCH');
@@ -284,8 +290,8 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
     expect(savedEvents[0].controllerOutcome).toBe(ControllerOutcome.CONTROLLER_CONFIRMED);
     expect(savedEvents[1].accessDecision).toBe(AccessDecision.DENIED);
 
-    const recent = await service.getRecentEvents('BD-GATE-01');
-    const queried = await service.queryEvents({ stationId : 'BD-GATE-01' });
+    const recent = await queryService.getRecentEvents('BD-GATE-01');
+    const queried = await queryService.queryEvents({ stationId : 'BD-GATE-01' });
     expect(recent).toHaveLength(2);
     expect(queried.total).toBe(2);
     expect(queried.approved).toBe(1);
@@ -361,7 +367,7 @@ describe('AttendanceEventService (Mission-Critical Gate Access - UC-03 & ADR-003
       qrPayload : 'TMC:QR:EMP-BD-001:V1:SEC_VALID_KEY_001',
     };
     const first = await service.submitAccessScan(request);
-    const recreated = new AttendanceEventService(
+    const recreated = new AccessScanService(
       userQRService, gateStationService, turnstileAdapter,
       eventModel as unknown as typeof AccessEventModel,
       requestModel as unknown as typeof AccessScanRequestModel,

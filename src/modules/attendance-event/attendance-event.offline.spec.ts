@@ -138,9 +138,7 @@ describe('Offline historical batch import', () => {
     };
     const station : any = { stationCode : 'BD-GATE-01', factoryId : FactoryId.BINH_DUONG, direction : GateDirection.ENTRY };
     service = new AttendanceEventService(
-      { validateCredential : validateQR } as any,
       { validateActiveStation : jest.fn(async () => station) } as any,
-      { unlockTurnstile : unlock } as any,
       eventModel, requestModel, batchModel,
     );
   });
