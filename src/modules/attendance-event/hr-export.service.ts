@@ -18,13 +18,9 @@ export class HrExportService {
   async exportHRBatch(dto: ExportHRBatchDto) {
     const batchId = `BATCH-${dto.reportingPeriod}-${randomBytes(3).toString('hex').toUpperCase()}`;
 
-    // Lọc chính xác các sự kiện trong khoảng thời gian của kỳ báo cáo YYYY-MM
-    const [yearStr, monthStr] = dto.reportingPeriod.split('-');
-    const year = parseInt(yearStr, 10);
-    const month = parseInt(monthStr, 10);
-
-    const startDate = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
-    const endDate = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
+    const startDate = new Date(`${dto.reportingPeriod}-01T00:00:00.000Z`);
+    const endDate = new Date(startDate);
+    endDate.setUTCMonth(endDate.getUTCMonth() + 1);
 
     const rawEvents = await this.accessEventModel.findAll({
       where: {
@@ -40,8 +36,9 @@ export class HrExportService {
       batchId,
       reportingPeriod: dto.reportingPeriod,
       eventCount: rawEvents.length,
-      status: 'EXPORT_ACKNOWLEDGED',
-      exportedAt: new Date(),
+      status: 'MOCK_ACKNOWLEDGED',
+      preparedAt: new Date(),
+      deliveryMode: 'SIMULATED',
       sampleEvents: rawEvents.slice(0, 10).map((e) => ({
         eventId: e.eventId,
         requestId: e.requestId,
@@ -54,11 +51,11 @@ export class HrExportService {
         serverTimestamp: e.serverTimestamp,
       })),
       destination: 'HR_PAYROLL_API_MOCK_ADAPTER',
-      acknowledgementReceipt: `HR-ACK-${Date.now()}-${randomBytes(4).toString('hex').toUpperCase()}`,
+      mockAcknowledgementReceipt: `HR-MOCK-${randomBytes(8).toString('hex').toUpperCase()}`,
     };
 
     this.logger.log(
-      `Exported HR/Payroll Batch ${batchId} for period ${dto.reportingPeriod} with ${rawEvents.length} events (window: ${startDate.toISOString()} - ${endDate.toISOString()})`,
+      `Prepared HR/Payroll batch ${batchId} for simulated delivery with ${rawEvents.length} events`,
     );
     return batch;
   }
