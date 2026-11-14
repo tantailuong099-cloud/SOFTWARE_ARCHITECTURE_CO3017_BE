@@ -21,7 +21,7 @@ jest.mock('@nestjs/sequelize', () => {
   };
 });
 
-describe('NFR-PERF-01: Kiosk Response-Time Performance Benchmark', () => {
+describe('Synthetic AccessScanService timing', () => {
   let scanService: AccessScanService;
 
   const mockGateStationContext = {
@@ -54,7 +54,7 @@ describe('NFR-PERF-01: Kiosk Response-Time Performance Benchmark', () => {
     validateActiveStation: jest.fn().mockResolvedValue(mockGateStationContext),
   };
 
-  // Mock hardware turnstile with realistic 120ms mechanical latency
+  // Simulate a fixed controller delay without hardware.
   const mockTurnstile = {
     unlockTurnstile: jest.fn().mockImplementation(async () => {
       await new Promise((res) => setTimeout(res, 120));
@@ -105,19 +105,19 @@ describe('NFR-PERF-01: Kiosk Response-Time Performance Benchmark', () => {
   });
 
   it(
-    'measures 50 sequential scan requests and verifies Kiosk SLA <= 2000ms',
+    'measures 50 sequential service calls with mocked persistence',
     async () => {
     const totalRequests = 50;
     const latencies: number[] = [];
 
     for (let i = 0; i < totalRequests; i++) {
-      const start = Date.now();
+      const start = performance.now();
       const res = await scanService.submitAccessScan({
         requestId: `REQ-PERF-${Date.now()}-${i}`,
         stationId: 'BD-GATE-01',
         qrPayload: `TMC:DYN:EMP-BD-001:${Date.now()}:nonce${i}:sig`,
       });
-      const duration = Date.now() - start;
+      const duration = performance.now() - start;
       latencies.push(duration);
       expect(res.accessDecision).toBe('APPROVED');
     }
@@ -126,23 +126,23 @@ describe('NFR-PERF-01: Kiosk Response-Time Performance Benchmark', () => {
     const min = latencies[0];
     const max = latencies[latencies.length - 1];
     const avg = Math.round(latencies.reduce((sum, v) => sum + v, 0) / latencies.length);
-    const p50 = latencies[Math.floor(latencies.length * 0.5)];
-    const p90 = latencies[Math.floor(latencies.length * 0.9)];
-    const p95 = latencies[Math.floor(latencies.length * 0.95)];
-    const p99 = latencies[Math.floor(latencies.length * 0.99)];
+    const percentile = (fraction: number) =>
+      latencies[Math.ceil(latencies.length * fraction) - 1];
 
-    console.log('\n===== KIOSK SLA BENCHMARK RESULTS (NFR-PERF-01) =====');
-    console.log(`Total Samples:       ${totalRequests}`);
-    console.log(`Min Latency:         ${min} ms`);
-    console.log(`Average Latency:     ${avg} ms`);
-    console.log(`Median (P50):        ${p50} ms`);
-    console.log(`P90 Latency:         ${p90} ms`);
-    console.log(`P95 Latency:         ${p95} ms (Threshold: <= 2000ms)`);
-    console.log(`P99 Latency:         ${p99} ms`);
-    console.log(`Max Latency:         ${max} ms`);
-    console.log('====================================================\n');
-
-    expect(p95).toBeLessThanOrEqual(2000);
-    expect(max).toBeLessThanOrEqual(2000);
+    console.log({
+      benchmark: 'Synthetic AccessScanService timing',
+      boundary: 'submitAccessScan entry to returned result',
+      sampleCount: latencies.length,
+      persistence: 'mocked',
+      simulatedControllerDelayMs: 120,
+      minMs: min,
+      averageMs: avg,
+      p50Ms: percentile(0.50),
+      p90Ms: percentile(0.90),
+      p95Ms: percentile(0.95),
+      p99Ms: percentile(0.99),
+      maxMs: max,
+    });
+    expect(mockTurnstile.unlockTurnstile).toHaveBeenCalledTimes(totalRequests);
   }, 30000);
 });
