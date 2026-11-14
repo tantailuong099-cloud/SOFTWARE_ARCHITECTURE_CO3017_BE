@@ -16,6 +16,7 @@ export enum GateDirection {
 export enum GateStationStatus {
   ACTIVE = 'ACTIVE',
   INACTIVE = 'INACTIVE',
+  DISABLED = 'DISABLED', // Hỗ trợ tương thích cả 2 chuẩn định danh trạng thái giữa FE và BE
 }
 
 @Table({

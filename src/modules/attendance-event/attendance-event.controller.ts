@@ -63,6 +63,13 @@ export class AttendanceEventController {
   }
 
   @Get('recent-events/:stationId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(
+    UserRole.ADMIN,
+    UserRole.SECURITY_GUARD,
+    UserRole.SUPERVISOR,
+    UserRole.HR_STAFF,
+  )
   async getRecentEvents(@Param('stationId') stationId: string) {
     return this.queryService.getRecentEvents(stationId);
   }
@@ -75,7 +82,54 @@ export class AttendanceEventController {
   }
 
   @Post('sync-offline-scans')
-  async syncOfflineScans(@Body() dto: SyncOfflineScansDto) {
-    return this.offlineService.syncOfflineScans(dto);
+  async syncOfflineScans(@Body() body: any) {
+    // 1. Nếu là định dạng Kiosk gửi danh sách scans trực tiếp
+    if (body && Array.isArray(body.scans)) {
+      const stationId = body.stationId || 'BD-GATE-01';
+      let processedCount = 0;
+      let duplicateCount = 0;
+      const results: any[] = [];
+
+      for (const scan of body.scans) {
+        try {
+          const res = await this.scanService.submitAccessScan({
+            requestId: scan.requestId,
+            stationId: scan.stationId || stationId,
+            qrPayload: scan.qrPayload,
+            deviceTimestamp: scan.deviceTimestamp,
+          });
+          if (res.isCachedDuplicate) {
+            duplicateCount++;
+          } else {
+            processedCount++;
+          }
+          results.push({
+            requestId: scan.requestId,
+            status: res.accessDecision === 'APPROVED' ? 'ACCEPTED' : 'DENIED',
+            decision: res.accessDecision,
+            reasonCode: res.reasonCode,
+          });
+        } catch (err: any) {
+          results.push({
+            requestId: scan.requestId,
+            status: 'ERROR',
+            reasonCode: err.message || 'SCAN_PROCESSING_ERROR',
+          });
+        }
+      }
+
+      return {
+        stationId,
+        status: 'COMPLETE',
+        totalReceived: body.scans.length,
+        processedCount,
+        acceptedCount: processedCount,
+        duplicateCount,
+        results,
+      };
+    }
+
+    // 2. Nếu là định dạng Batch ký số Ed25519 theo chuẩn ADR-008
+    return this.offlineService.syncOfflineScans(body as SyncOfflineScansDto);
   }
 }

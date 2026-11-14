@@ -75,7 +75,11 @@ export class UserQRController {
     employeeId: string,
     actor: CurrentUserData,
   ) {
-    if (actor.role !== UserRole.ADMIN && actor.employeeCode !== employeeId) {
+    if (
+      actor.role !== UserRole.ADMIN &&
+      actor.employeeCode !== employeeId &&
+      actor.id !== employeeId
+    ) {
       throw new ForbiddenException(
         'Cannot issue a QR presentation for another employee',
       );

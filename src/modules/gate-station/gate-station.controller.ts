@@ -21,7 +21,6 @@ import {
 
 @Controller('api/gate-stations')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.ADMIN)
 export class GateStationController {
   constructor(private readonly gateStationService: GateStationService) {}
 
@@ -36,11 +35,13 @@ export class GateStationController {
   }
 
   @Post()
+  @Roles(UserRole.ADMIN)
   createStation(@Body() dto: CreateGateStationDto) {
     return this.gateStationService.create(dto);
   }
 
   @Patch(':stationCode')
+  @Roles(UserRole.ADMIN)
   updateStation(
     @Param('stationCode') stationCode: string,
     @Body() dto: UpdateGateStationDto,
@@ -49,6 +50,7 @@ export class GateStationController {
   }
 
   @Patch(':stationCode/status')
+  @Roles(UserRole.ADMIN)
   updateStatus(
     @Param('stationCode') stationCode: string,
     @Body() dto: UpdateGateStationStatusDto,
@@ -57,6 +59,7 @@ export class GateStationController {
   }
 
   @Delete(':stationCode')
+  @Roles(UserRole.ADMIN)
   deleteStation(@Param('stationCode') stationCode: string) {
     return this.gateStationService.delete(stationCode);
   }
