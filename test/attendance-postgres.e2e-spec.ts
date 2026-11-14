@@ -223,6 +223,31 @@ describe('Attendance and sessions on migrated PostgreSQL', () => {
     expect(unlockTurnstile).toHaveBeenCalledTimes(1);
   });
 
+  it('stores either inactive station status as INACTIVE and denies a live scan', async () => {
+    const code = `TEST-${randomUUID()}`;
+    const authorization = `Bearer ${adminToken}`;
+    await http().post('/api/gate-stations').set('Authorization', authorization)
+      .send({
+        stationCode: code, name: 'Test gate', location: 'Test facility',
+        factoryId: 'BINH_DUONG', direction: 'ENTRY', status: 'DISABLED',
+      }).expect(201).expect(({ body }) => expect(body.status).toBe('INACTIVE'));
+    try {
+      for (const status of ['DISABLED', 'INACTIVE']) {
+        await http().patch(`/api/gate-stations/${code}/status`)
+          .set('Authorization', authorization).send({ status }).expect(200)
+          .expect(({ body }) => expect(body.status).toBe('INACTIVE'));
+        await http().post('/api/access/scan')
+          .send({ requestId: randomUUID(), stationId: code, qrPayload: 'fixture' })
+          .expect(201).expect(({ body }) => expect(body).toMatchObject({
+            accessDecision: 'DENIED', reasonCode: 'STATION_INACTIVE',
+          }));
+      }
+      expect(unlockTurnstile).not.toHaveBeenCalled();
+    } finally {
+      await http().delete(`/api/gate-stations/${code}`).set('Authorization', authorization).expect(200);
+    }
+  });
+
   it('rolls back QR consumption and the request claim when PostgreSQL rejects the event insert', async () => {
     const { qrToken, jti } = await presentation();
     const dto = { requestId: randomUUID(), stationId, qrPayload: qrToken };

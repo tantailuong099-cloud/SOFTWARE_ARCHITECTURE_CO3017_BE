@@ -54,7 +54,7 @@ export class GateStationService {
       factoryId: dto.factoryId,
       direction: dto.direction,
       location: dto.location.trim(),
-      status: dto.status ?? GateStationStatus.ACTIVE,
+      status: this.persistedStatus(dto.status ?? GateStationStatus.ACTIVE),
     });
 
     return this.toResponse(station);
@@ -70,7 +70,7 @@ export class GateStationService {
     if (dto.factoryId !== undefined) station.factoryId = dto.factoryId;
     if (dto.direction !== undefined) station.direction = dto.direction;
     if (dto.location !== undefined) station.location = dto.location.trim();
-    if (dto.status !== undefined) station.status = dto.status;
+    if (dto.status !== undefined) station.status = this.persistedStatus(dto.status);
 
     await station.save();
     return this.toResponse(station);
@@ -81,7 +81,7 @@ export class GateStationService {
     status: GateStationStatus,
   ): Promise<GateStationResponseDto> {
     const station = await this.findByStationCode(stationCode);
-    station.status = status;
+    station.status = this.persistedStatus(status);
     await station.save();
     return this.toResponse(station);
   }
@@ -116,6 +116,11 @@ export class GateStationService {
     }
 
     return context;
+  }
+
+  private persistedStatus(status: GateStationStatus): GateStationStatus {
+    // PostgreSQL stores INACTIVE; DISABLED is a wire alias.
+    return status === GateStationStatus.DISABLED ? GateStationStatus.INACTIVE : status;
   }
 
   private async findByStationCode(
