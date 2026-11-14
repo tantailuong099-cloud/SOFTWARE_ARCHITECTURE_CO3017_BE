@@ -16,6 +16,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   Equals,
+  MaxLength,
   ValidateNested,
 } from 'class-validator';
 import { AccessDecision, ControllerOutcome } from '../model/access-event.model';
@@ -90,6 +91,50 @@ export class QueryRawEventsDto {
 export class ExportHRBatchDto {
   @Matches(/^\d{4}-(0[1-9]|1[0-2])$/)
   reportingPeriod: string;
+}
+
+export class LegacyOfflineScanDto implements SubmitAccessScanDto {
+  @Matches(/\S/)
+  @MaxLength(255)
+  requestId: string;
+
+  @Matches(/\S/)
+  @MaxLength(255)
+  stationId: string;
+
+  @Matches(/\S/)
+  @MaxLength(8192)
+  qrPayload: string;
+
+  @IsOptional()
+  @IsDateString({ strict: true })
+  deviceTimestamp?: string;
+
+  @IsOptional()
+  @IsDateString({ strict: true })
+  offlineTimestamp?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  apiKey?: string;
+}
+
+export class LegacyOfflineBatchDto {
+  @Matches(/\S/)
+  @MaxLength(255)
+  stationId: string;
+
+  @IsOptional()
+  @IsDateString({ strict: true })
+  syncTimestamp?: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(25)
+  @ValidateNested({ each: true })
+  @Type(() => LegacyOfflineScanDto)
+  scans: LegacyOfflineScanDto[];
 }
 
 export class OfflineAccessEventDto {

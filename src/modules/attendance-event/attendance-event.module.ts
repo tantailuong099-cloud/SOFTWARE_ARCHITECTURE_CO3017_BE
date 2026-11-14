@@ -7,6 +7,7 @@ import { AttendanceEventController } from './attendance-event.controller';
 import { AccessScanService } from './access-scan.service';
 import { AttendanceQueryService } from './attendance-query.service';
 import { OfflineSyncService } from './offline-sync.service';
+import { LegacyOfflineSyncService } from './legacy-offline-sync.service';
 import { HrExportService } from './hr-export.service';
 import { AuthModule } from '../auth/auth.module';
 import { UserQRModule } from '../user-qr/user-qr.module';
@@ -30,6 +31,7 @@ import { TurnstileModule } from '../../adapters/turnstile/turnstile.module';
     AccessScanService,
     AttendanceQueryService,
     OfflineSyncService,
+    LegacyOfflineSyncService,
     HrExportService,
   ],
 })

@@ -29,8 +29,11 @@ describe('AppController (e2e)', () => {
 
   it.each([
     ['get', '/api/access/events'],
+    ['get', '/api/access/recent-events/BD-GATE-01'],
+    ['get', '/api/gate-stations'],
     ['post', '/api/access/export-hr'],
     ['get', '/api/user-qr/employees/EMP-BD-001/dynamic-qr'],
+    ['get', '/api/qr/employees/EMP-BD-001/dynamic-qr'],
     ['post', '/api/qr/employees/EMP-BD-001/dynamic-qr'],
   ] as const)('requires a session for %s %s', async (method, path) => {
     await request(app.getHttpServer())[method](path).expect(401);

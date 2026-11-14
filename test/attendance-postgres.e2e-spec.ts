@@ -174,6 +174,55 @@ describe('Attendance and sessions on migrated PostgreSQL', () => {
     expect(unlockTurnstile).toHaveBeenCalledTimes(1);
   });
 
+  it('reconciles raw sync without creating claims, consuming QR or unlocking the gate', async () => {
+    const { qrToken, jti } = await presentation();
+    const scan = { requestId: randomUUID(), stationId, qrPayload: qrToken };
+    const submitBatch = (scans: unknown[]) => http()
+      .post('/api/access/sync-offline-scans').send({ stationId, scans });
+
+    await submitBatch([{ ...scan, stationId: 'other' }]).expect(400);
+    await submitBatch([scan, scan]).expect(400);
+    await submitBatch(Array.from({ length: 26 }, () => scan)).expect(400);
+    await http().post('/api/access/sync-offline-scans').send({ scans: [scan] }).expect(400);
+    await submitBatch([null]).expect(400);
+    const pending = await Promise.all([submitBatch([scan]).expect(201), submitBatch([scan]).expect(201)]);
+    for (const { body } of pending) {
+      expect(body).toMatchObject({
+        status: 'PARTIAL', processedCount: 0, acceptedCount: 0, deniedCount: 0,
+        duplicateCount: 0, errorCount: 1,
+        results: [{ requestId: scan.requestId, status: 'PENDING', reasonCode: 'SIGNED_EVIDENCE_REQUIRED' }],
+      });
+    }
+    expect(await AccessScanRequestModel.findByPk(scan.requestId)).toBeNull();
+    expect((await QRPresentationModel.findOne({ where: { jti } }))?.consumedAt).toBeNull();
+    expect(unlockTurnstile).not.toHaveBeenCalled();
+
+    await http().post('/api/access/scan').send(scan).expect(201);
+    const denied = { ...scan, requestId: randomUUID(), qrPayload: 'unrecognized' };
+    await http().post('/api/access/scan').send(denied).expect(201);
+    await app.close();
+    app = await openApp();
+    database = app.get(getConnectionToken());
+    const unknown = { ...scan, requestId: randomUUID() };
+    const { body } = await submitBatch([scan, denied, unknown]).expect(201);
+    expect(body).toMatchObject({
+      status: 'PARTIAL', processedCount: 2, acceptedCount: 0, deniedCount: 0,
+      duplicateCount: 2, errorCount: 1,
+      results: [
+        { requestId: scan.requestId, status: 'DUPLICATE' },
+        { requestId: denied.requestId, status: 'DUPLICATE' },
+        { requestId: unknown.requestId, status: 'PENDING' },
+      ],
+    });
+    await submitBatch([scan, denied]).expect(201).expect(({ body: result }) =>
+      expect(result).toMatchObject({ status: 'COMPLETE', processedCount: 2, duplicateCount: 2, errorCount: 0 }),
+    );
+    await submitBatch([{ ...scan, qrPayload: 'different' }]).expect(201).expect(({ body: result }) =>
+      expect(result).toMatchObject({ status: 'PARTIAL', errorCount: 1, results: [{ status: 'ERROR' }] }),
+    );
+    expect(unlockTurnstile).toHaveBeenCalledTimes(1);
+  });
+
   it('rolls back QR consumption and the request claim when PostgreSQL rejects the event insert', async () => {
     const { qrToken, jti } = await presentation();
     const dto = { requestId: randomUUID(), stationId, qrPayload: qrToken };
@@ -212,6 +261,17 @@ describe('Attendance and sessions on migrated PostgreSQL', () => {
       .get(`/api/user-qr/employees/${employeeCode}/dynamic-qr`)
       .set('Authorization', bearer)
       .expect(200);
+    await http()
+      .get(`/api/qr/employees/${employeeCode}/dynamic-qr`)
+      .set('Authorization', bearer)
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({
+        employeeId: employeeCode, qrPayload: expect.any(String),
+        expiresAt: expect.any(String), validDurationSeconds: expect.any(Number),
+      }));
+    await http().get('/api/gate-stations').set('Authorization', bearer).expect(200);
+    await http().get(`/api/access/recent-events/${stationId}`).set('Authorization', bearer).expect(403);
+    await http().get(`/api/access/recent-events/${stationId}`).set('Authorization', `Bearer ${adminToken}`).expect(200);
     await http()
       .get('/api/user-qr/employees/EMP-LA-001/dynamic-qr')
       .set('Authorization', bearer)

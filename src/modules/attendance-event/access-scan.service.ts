@@ -20,6 +20,7 @@ import { TURNSTILE_PORT, TurnstileCommandResult } from '../../adapters/turnstile
 import { AccessScanResponseDto, SubmitAccessScanDto } from './dto/access-event.dto';
 import { UserStatus } from '../users/model/user.model';
 import type { GateStationContext } from '../gate-station/dto/gate-station.dto';
+import { scanRequestFingerprint } from './scan-request-fingerprint';
 
 @Injectable()
 export class AccessScanService {
@@ -40,8 +41,7 @@ export class AccessScanService {
   async submitAccessScan(dto : SubmitAccessScanDto) : Promise<AccessScanResponseDto> {
     const startTime       = Date.now();
     const correlationId   = `CORR-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-    const requestData     = JSON.stringify([dto.stationId, dto.qrPayload, dto.deviceTimestamp ?? null]);
-    const fingerprint     = crypto.createHash('sha256').update(requestData).digest('hex');
+    const fingerprint     = scanRequestFingerprint(dto);
     const database        = this.accessEventModel.sequelize;
     if (!database) throw new Error('Attendance database is not configured');
 

@@ -8,6 +8,8 @@ import {
   Param,
   UseGuards,
   ForbiddenException,
+  BadRequestException,
+  ValidationPipe,
 } from '@nestjs/common';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { CurrentUserData } from '../auth/decorators/current-user.decorator';
@@ -18,8 +20,10 @@ import { UserRole } from '../users/model/user.model';
 import { AccessScanService } from './access-scan.service';
 import { AttendanceQueryService } from './attendance-query.service';
 import { OfflineSyncService } from './offline-sync.service';
+import { LegacyOfflineSyncService } from './legacy-offline-sync.service';
 import {
   ExportHRBatchDto,
+  LegacyOfflineBatchDto,
   QueryRawEventsDto,
   SubmitAccessScanDto,
   SyncOfflineScansDto,
@@ -27,10 +31,17 @@ import {
 
 @Controller('api/access')
 export class AttendanceEventController {
+  private readonly offlineBatchPipe = new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  });
+
   constructor(
     private readonly scanService: AccessScanService,
     private readonly queryService: AttendanceQueryService,
     private readonly offlineService: OfflineSyncService,
+    private readonly legacyOfflineService: LegacyOfflineSyncService,
     private readonly exportService: HrExportService,
   ) {}
 
@@ -82,54 +93,33 @@ export class AttendanceEventController {
   }
 
   @Post('sync-offline-scans')
-  async syncOfflineScans(@Body() body: any) {
-    // 1. Nếu là định dạng Kiosk gửi danh sách scans trực tiếp
-    if (body && Array.isArray(body.scans)) {
-      const stationId = body.stationId || 'BD-GATE-01';
-      let processedCount = 0;
-      let duplicateCount = 0;
-      const results: any[] = [];
-
-      for (const scan of body.scans) {
-        try {
-          const res = await this.scanService.submitAccessScan({
-            requestId: scan.requestId,
-            stationId: scan.stationId || stationId,
-            qrPayload: scan.qrPayload,
-            deviceTimestamp: scan.deviceTimestamp,
-          });
-          if (res.isCachedDuplicate) {
-            duplicateCount++;
-          } else {
-            processedCount++;
-          }
-          results.push({
-            requestId: scan.requestId,
-            status: res.accessDecision === 'APPROVED' ? 'ACCEPTED' : 'DENIED',
-            decision: res.accessDecision,
-            reasonCode: res.reasonCode,
-          });
-        } catch (err: any) {
-          results.push({
-            requestId: scan.requestId,
-            status: 'ERROR',
-            reasonCode: err.message || 'SCAN_PROCESSING_ERROR',
-          });
-        }
+  async syncOfflineScans(@Body() body: unknown) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new BadRequestException('INVALID_OFFLINE_BATCH');
+    }
+    if ('scans' in body) {
+      if (!Array.isArray(body.scans) || body.scans.length > 25 ||
+          body.scans.some(scan => !scan || typeof scan !== 'object' || Array.isArray(scan))) {
+        throw new BadRequestException('INVALID_LEGACY_BATCH');
       }
-
-      return {
-        stationId,
-        status: 'COMPLETE',
-        totalReceived: body.scans.length,
-        processedCount,
-        acceptedCount: processedCount,
-        duplicateCount,
-        results,
-      };
+      const batch = await this.offlineBatchPipe.transform(body, {
+        type: 'body', metatype: LegacyOfflineBatchDto,
+      }) as LegacyOfflineBatchDto;
+      if (batch.scans.some(scan => scan.stationId !== batch.stationId) ||
+          new Set(batch.scans.map(scan => scan.requestId)).size !== batch.scans.length) {
+        throw new BadRequestException('INCONSISTENT_LEGACY_BATCH_IDENTITIES');
+      }
+      return this.legacyOfflineService.reconcile(batch);
     }
 
-    // 2. Nếu là định dạng Batch ký số Ed25519 theo chuẩn ADR-008
-    return this.offlineService.syncOfflineScans(body as SyncOfflineScansDto);
+    if (!('events' in body) || !Array.isArray(body.events) ||
+        body.events.length > 25 ||
+        body.events.some(event => !event || typeof event !== 'object' || Array.isArray(event))) {
+      throw new BadRequestException('INVALID_OFFLINE_BATCH');
+    }
+    const batch = await this.offlineBatchPipe.transform(body, {
+      type: 'body', metatype: SyncOfflineScansDto,
+    }) as SyncOfflineScansDto;
+    return this.offlineService.syncOfflineScans(batch);
   }
 }
